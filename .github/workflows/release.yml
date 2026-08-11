@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v*.*.*
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Validate release tag
+        shell: pwsh
+        run: .\scripts\Test-Version.ps1 -ExpectedTag '${{ github.ref_name }}'
+
+      - name: Restore
+        run: dotnet restore .\Logibooks.Alta.sln
+
+      - name: Test
+        run: >-
+          dotnet test .\Logibooks.Alta.Tests\Logibooks.Alta.Tests.csproj
+          --configuration Release
+          --no-restore
+
+      - name: Install Visual Studio Installer Projects 3.x
+        shell: pwsh
+        run: .\scripts\Install-VdprojExtension.ps1
+
+      - name: Build release MSI
+        shell: pwsh
+        run: .\scripts\Build-Installer.ps1 -Configuration Release
+
+      - name: Validate MSI database
+        shell: pwsh
+        run: .\scripts\Test-Installer.ps1
+
+      - name: Create SHA-256 checksum
+        shell: pwsh
+        run: |
+          $msi = '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.msi'
+          $hash = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash *Logibooks.Alta.Adapter.Setup.msi" | Set-Content "$msi.sha256" -Encoding ascii
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create '${{ github.ref_name }}'
+          '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.msi'
+          '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.msi.sha256'
+          --verify-tag
+          --generate-notes
+          --title 'Logibooks Alta Adapter ${{ github.ref_name }}'
