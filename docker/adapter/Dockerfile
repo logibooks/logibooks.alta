@@ -24,7 +24,7 @@ LABEL org.opencontainers.image.title="Logibooks Alta Adapter" \
 
 WORKDIR /app
 COPY --from=build /app/publish ./
-
+ARG APP_UID=0
 USER $APP_UID
 ENTRYPOINT ["dotnet", "Logibooks.Alta.Adapter.dll"]
 
