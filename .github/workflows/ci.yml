@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-installer:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Validate version metadata
+        shell: pwsh
+        run: .\scripts\Test-Version.ps1
+
+      - name: Restore
+        run: dotnet restore .\Logibooks.Alta.sln
+
+      - name: Test
+        run: >-
+          dotnet test .\Logibooks.Alta.Tests\Logibooks.Alta.Tests.csproj
+          --configuration Release
+          --no-restore
+          --collect:"XPlat Code Coverage"
+
+      - name: Publish self-contained service
+        run: >-
+          dotnet publish .\Logibooks.Alta.Service\Logibooks.Alta.Service.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          --no-restore
+          -p:PublishProfile=win-x64
+
+      - name: Install Visual Studio Installer Projects 3.x
+        shell: pwsh
+        run: .\scripts\Install-VdprojExtension.ps1
+
+      - name: Build MSI
+        shell: pwsh
+        run: .\scripts\Build-Installer.ps1 -Configuration Release
+
+      - name: Validate MSI database
+        shell: pwsh
+        run: .\scripts\Test-Installer.ps1
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v6
+        with:
+          name: Logibooks.Alta.Setup
+          path: Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.msi
+          if-no-files-found: error
