@@ -1,6 +1,8 @@
+using Logibooks.Alta.Configuration;
+
 namespace Logibooks.Alta.Database;
 
 internal interface IMssqlProbe
 {
-    Task ProbeAsync(CancellationToken cancellationToken);
+    Task ProbeAsync(RuntimeDatabaseTarget database, CancellationToken cancellationToken);
 }

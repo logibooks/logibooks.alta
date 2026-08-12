@@ -1,5 +1,6 @@
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Runtime.Versioning;
 
 namespace Logibooks.Alta.Installation;
 
@@ -8,6 +9,7 @@ internal interface IFileAclProtector
     void Protect(string directoryPath, string filePath);
 }
 
+[SupportedOSPlatform("windows")]
 internal sealed class WindowsFileAclProtector : IFileAclProtector
 {
     public void Protect(string directoryPath, string filePath)

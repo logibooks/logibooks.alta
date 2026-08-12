@@ -45,17 +45,25 @@ internal static class ProgramEntry
             ConfigurationPaths.GetConfigurationPath(),
             optional: true,
             reloadOnChange: true);
+        // The external operational file is added after the host defaults, so re-add
+        // environment variables last to preserve standard container override behavior.
+        builder.Configuration.AddEnvironmentVariables();
 
-        builder.Services.AddWindowsService(options => options.ServiceName = ServiceConstants.ServiceName);
-        builder.Logging.AddEventLog(new EventLogSettings
+        if (OperatingSystem.IsWindows())
         {
-            LogName = "Application",
-            SourceName = ServiceConstants.DisplayName
-        });
+            builder.Services.AddWindowsService(options => options.ServiceName = ServiceConstants.ServiceName);
+            builder.Logging.AddEventLog(new EventLogSettings
+            {
+                LogName = "Application",
+                SourceName = ServiceConstants.DisplayName
+            });
+        }
 
         builder.Services
             .Configure<ServiceOptions>(builder.Configuration.GetSection(ServiceOptions.SectionName))
-            .Configure<CoreOptions>(builder.Configuration.GetSection(CoreOptions.SectionName));
+            .Configure<CoreOptions>(builder.Configuration.GetSection(CoreOptions.SectionName))
+            .Configure<DatabaseMonitoringOptions>(
+                builder.Configuration.GetSection(DatabaseMonitoringOptions.SectionName));
 
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<IRuntimeConfigurationProvider, RuntimeConfigurationProvider>();
@@ -83,6 +91,12 @@ internal static class ProgramEntry
     {
         try
         {
+            if (!OperatingSystem.IsWindows())
+            {
+                throw new PlatformNotSupportedException(
+                    "Service installation commands are supported only on Windows.");
+            }
+
             var executablePath = Environment.ProcessPath
                 ?? Path.Combine(AppContext.BaseDirectory, "Logibooks.Alta.Adapter.exe");
             var configurationDirectory = ConfigurationPaths.GetDirectoryPath();

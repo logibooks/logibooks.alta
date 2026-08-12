@@ -1,0 +1,29 @@
+{
+  "profiles": {
+    "Docker Compose": {
+      "commandName": "DockerCompose",
+      "commandVersion": "1.0",
+      "composeLaunchAction": "None",
+      "serviceActions": {
+        "adapter": "StartDebugging",
+        "mssql": "StartWithoutDebugging",
+        "mssql-restore": "StartWithoutDebugging",
+        "adminer": "StartWithoutDebugging"
+      }
+    },
+    "Docker Compose (Adminer)": {
+      "commandName": "DockerCompose",
+      "commandVersion": "1.0",
+      "composeLaunchAction": "LaunchBrowser",
+      "composeLaunchServiceName": "adminer",
+      "composeLaunchUrl": "{Scheme}://localhost:{ServicePort}",
+      "serviceActions": {
+        "adapter": "StartWithoutDebugging",
+        "mssql": "StartWithoutDebugging",
+        "mssql-restore": "StartWithoutDebugging",
+        "adminer": "StartWithoutDebugging"
+      }
+    }
+  }
+}
+

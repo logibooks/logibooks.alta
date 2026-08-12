@@ -1,5 +1,5 @@
 using Logibooks.Alta.Database;
-using Microsoft.Extensions.Configuration;
+using Logibooks.Alta.Configuration;
 
 namespace Logibooks.Alta.Tests;
 
@@ -11,10 +11,9 @@ public sealed class MssqlProbeTests
     {
         var connection = new FakeDatabaseConnection { ScalarResult = 1 };
         var factory = new FakeConnectionFactory(connection);
-        var configuration = Configuration("Server=db;User Id=alta;Password=secret");
-        var probe = new MssqlProbe(configuration, factory, new NoDatabaseRetryDelay());
+        var probe = new MssqlProbe(factory, new NoDatabaseRetryDelay());
 
-        await probe.ProbeAsync(CancellationToken.None);
+        await probe.ProbeAsync(Target("Server=db;User Id=alta;Password=secret"), CancellationToken.None);
 
         Assert.Multiple(() =>
         {
@@ -27,15 +26,46 @@ public sealed class MssqlProbeTests
     }
 
     [Test]
+    public async Task ProbeAsync_UsesEachTargetsExactConnectionString()
+    {
+        var factory = new FakeConnectionFactory(
+            new FakeDatabaseConnection { ScalarResult = 1 },
+            new FakeDatabaseConnection { ScalarResult = 1 });
+        var probe = new MssqlProbe(factory, new NoDatabaseRetryDelay());
+        var first = "Server=first;Database=one;User Id=alta;Password=secret-one";
+        var second = "Server=second;Database=two;User Id=alta;Password=secret-two";
+
+        await probe.ProbeAsync(new RuntimeDatabaseTarget("one", first), CancellationToken.None);
+        await probe.ProbeAsync(new RuntimeDatabaseTarget("two", second), CancellationToken.None);
+
+        Assert.That(factory.ConnectionStrings, Is.EqualTo(new[] { first, second }));
+    }
+
+    [Test]
+    public void ProbeAsync_PropagatesCancellationWithoutRetrying()
+    {
+        var factory = new FakeConnectionFactory(new FakeDatabaseConnection());
+        var delay = new NoDatabaseRetryDelay();
+        var probe = new MssqlProbe(factory, delay);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        Assert.That(
+            async () => await probe.ProbeAsync(Target("Server=db;Integrated Security=True"), cancellation.Token),
+            Throws.InstanceOf<OperationCanceledException>());
+        Assert.That(factory.CreateCalls, Is.EqualTo(1));
+        Assert.That(delay.Delays, Is.Empty);
+    }
+
+    [Test]
     public void ProbeAsync_RejectsMissingConnectionString()
     {
         var probe = new MssqlProbe(
-            Configuration(null),
             new FakeConnectionFactory(new FakeDatabaseConnection()),
             new NoDatabaseRetryDelay());
 
         Assert.That(
-            async () => await probe.ProbeAsync(CancellationToken.None),
+            async () => await probe.ProbeAsync(Target(string.Empty), CancellationToken.None),
             Throws.TypeOf<InvalidOperationException>());
     }
 
@@ -44,12 +74,11 @@ public sealed class MssqlProbeTests
     {
         var connection = new FakeDatabaseConnection { ScalarResult = 0 };
         var probe = new MssqlProbe(
-            Configuration("Server=db;Password=secret"),
             new FakeConnectionFactory(connection),
             new NoDatabaseRetryDelay());
 
         Assert.That(
-            async () => await probe.ProbeAsync(CancellationToken.None),
+            async () => await probe.ProbeAsync(Target("Server=db;Password=secret"), CancellationToken.None),
             Throws.TypeOf<InvalidOperationException>());
     }
 
@@ -61,11 +90,10 @@ public sealed class MssqlProbeTests
         var factory = new FakeConnectionFactory(first, second);
         var delay = new NoDatabaseRetryDelay();
         var probe = new MssqlProbe(
-            Configuration("Server=db;Password=secret"),
             factory,
             delay);
 
-        await probe.ProbeAsync(CancellationToken.None);
+        await probe.ProbeAsync(Target("Server=db;Password=secret"), CancellationToken.None);
 
         Assert.Multiple(() =>
         {
@@ -76,24 +104,21 @@ public sealed class MssqlProbeTests
         });
     }
 
-    private static IConfiguration Configuration(string? connectionString) =>
-        new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["ConnectionStrings:AltaDatabase"] = connectionString
-            })
-            .Build();
+    private static RuntimeDatabaseTarget Target(string connectionString) =>
+        new("database-one", connectionString);
 
     private sealed class FakeConnectionFactory(params FakeDatabaseConnection[] connections)
         : IDatabaseConnectionFactory
     {
         private readonly Queue<FakeDatabaseConnection> _connections = new(connections);
         public string? ConnectionString { get; private set; }
+        public List<string> ConnectionStrings { get; } = [];
         public int CreateCalls { get; private set; }
 
         public IDatabaseConnection Create(string connectionString)
         {
             ConnectionString = connectionString;
+            ConnectionStrings.Add(connectionString);
             CreateCalls++;
             return _connections.Dequeue();
         }

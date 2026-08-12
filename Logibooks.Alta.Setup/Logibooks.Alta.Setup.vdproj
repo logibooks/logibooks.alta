@@ -198,15 +198,15 @@
         {
         "Name" = "8:Microsoft Visual Studio"
         "ProductName" = "8:Logibooks Alta Adapter"
-        "ProductCode" = "8:{8E8E9EF8-6FE1-4E40-AC43-F69B7A3DA137}"
-        "PackageCode" = "8:{056F2B33-49FD-4835-B201-F4871EFC476C}"
+        "ProductCode" = "8:{5A4AAB48-CC9F-4E4E-A7EA-EB334EFB8DEF}"
+        "PackageCode" = "8:{2FA01F13-FC3F-416B-BA5F-4C3BAE12386A}"
         "UpgradeCode" = "8:{36E2F8BB-D73C-47F2-A624-371518531952}"
         "AspNetVersion" = "8:"
         "RestartWWWService" = "11:FALSE"
         "RemovePreviousVersions" = "11:TRUE"
         "DetectNewerInstalledVersion" = "11:TRUE"
         "InstallAllUsers" = "11:TRUE"
-        "ProductVersion" = "8:0.1.0"
+        "ProductVersion" = "8:0.2.0"
         "Manufacturer" = "8:Logibooks"
         "ARPHELPTELEPHONE" = "8:"
         "ARPHELPLINK" = "8:"
@@ -274,7 +274,7 @@
         {
             "{5259A561-127C-4D43-A0A1-72F10C7B3BF8}:_ALTA_SERVICE_PUBLISH"
             {
-            "SourcePath" = "8:..\\Logibooks.Alta.Service\\obj\\Release\\net10.0-windows\\win-x64\\apphost.exe"
+            "SourcePath" = "8:..\\Logibooks.Alta.Service\\obj\\Release\\net10.0\\win-x64\\apphost.exe"
             "TargetName" = "8:"
             "Tag" = "8:"
             "Folder" = "8:_ALTA_APPLICATION_FOLDER"

@@ -1,0 +1,85 @@
+name: logibooks-alta
+
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2025-CU7-ubuntu-24.04
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: EnterpriseDeveloper
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${MSSQL_PORT:-1433}:1433"
+    volumes:
+      - type: bind
+        source: ${ALTA_INSTANCE3_DIR:-D:/Projects/logibooks/AltaInstance3}
+        target: /var/opt/mssql/data
+      - type: bind
+        source: ${ALTA_BACKUP_DIR:-D:/Projects/logibooks/AltaDB}
+        target: /var/opt/mssql/backup
+        read_only: true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa
+          -P "$${MSSQL_SA_PASSWORD}" -C -b -Q "SELECT 1" -o /dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  mssql-restore:
+    image: mcr.microsoft.com/mssql/server:2025-CU7-ubuntu-24.04
+    depends_on:
+      mssql:
+        condition: service_healthy
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in .env}
+      ALTA_DB_PASSWORD: ${ALTA_DB_PASSWORD:?Set ALTA_DB_PASSWORD in .env}
+    volumes:
+      - type: bind
+        source: ${ALTA_BACKUP_DIR:-D:/Projects/logibooks/AltaDB}
+        target: /var/opt/mssql/backup
+        read_only: true
+      - type: bind
+        source: ./docker/mssql/restore-gtk.sh
+        target: /usr/local/bin/restore-gtk.sh
+        read_only: true
+    entrypoint: ["/bin/bash", "/usr/local/bin/restore-gtk.sh"]
+    restart: "no"
+
+  adapter:
+    build:
+      context: .
+      dockerfile: docker/adapter/Dockerfile
+      args:
+        VERSION: ${ALTA_VERSION:-0.2.0}
+    environment:
+      LOGIBOOKS_ALTA_CONFIG_PATH: /etc/logibooks/alta/appsettings.json
+      DOTNET_USE_POLLING_FILE_WATCHER: "1"
+      Databases__Targets__0__ConnectionString: >-
+        Server=mssql,1433;Database=gtk;User ID=alta_adapter;
+        Password=${ALTA_DB_PASSWORD:?Set ALTA_DB_PASSWORD in .env};
+        Encrypt=True;TrustServerCertificate=True
+    volumes:
+      - type: bind
+        source: ./docker/config/appsettings.json
+        target: /etc/logibooks/alta/appsettings.json
+        read_only: true
+    depends_on:
+      mssql-restore:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  adminer:
+    build:
+      context: docker/adminer
+    environment:
+      ADMINER_DEFAULT_SERVER: mssql
+    ports:
+      - "127.0.0.1:${ADMINER_PORT:-8083}:8080"
+    depends_on:
+      mssql-restore:
+        condition: service_completed_successfully
+    restart: unless-stopped

@@ -2,40 +2,32 @@
 
 <img src="Logibooks.Alta.Service/Assets/Logibooks.Alta.Adapter.png" alt="Logibooks Alta Adapter" width="160">
 
-Logibooks Alta Adapter is a Windows service that monitors a Microsoft SQL Server database and communicates with Logibooks Core over authenticated HTTPS. Version `0.1.0` is the connectivity foundation: it probes both systems but does not read or transmit business data.
+Logibooks Alta Adapter monitors one or more Microsoft SQL Server databases and communicates with Logibooks Core over authenticated HTTPS. Version `0.2.0` adds independently configured database targets and a Linux container environment for development. It still performs connectivity probes only; business queries, payloads, ingestion, checkpoints, and idempotency are outside this version.
 
-## What version 0.1.0 does
+## Runtime behavior
 
-- Runs as the `LogibooksAltaAdapter` Windows service (`Logibooks Alta Adapter`) under `LocalService`.
-- Starts automatically with delayed startup and remains safely idle until enabled.
-- Reloads its ProgramData configuration without restarting the service.
-- Executes `SELECT CAST(1 AS int)` against MSSQL.
-- Signs in to Core through `POST /api/Auth/login`, requires the `adapter-alta` role, caches the JWT in memory, and calls `GET /api/Auth/check`.
-- Refreshes a JWT before expiry and performs one fresh-login retry after an HTTP `401`.
-- Retries transient network and HTTP 5xx failures three times, with 1- and 2-second delays.
-- Logs version, state changes, successful probes, and sanitized errors to the Windows Application event log.
-
-No business query, payload, ingestion endpoint, checkpoint, or idempotency behavior is part of this version.
-
-## Prerequisites
-
-- Windows x64.
-- .NET 10 SDK for development. The installed service is self-contained and does not require a separately installed runtime.
-- Visual Studio 2022 or 2026 with **Microsoft Visual Studio Installer Projects 3.x** to build the MSI.
+- Production runs as the self-contained x64 `LogibooksAltaAdapter` Windows service (`Logibooks Alta Adapter`) under `LocalService`.
+- Production SQL Server instances and databases remain external and are not installed or managed by the adapter.
+- Development can run the adapter in Linux alongside SQL Server 2025 and MSSQL-enabled Adminer through Docker Compose.
+- Each enabled target executes `SELECT CAST(1 AS int)`. Database probes run independently with bounded concurrency.
+- The optional Core probe runs concurrently with the database probes. It signs in through `POST /api/Auth/login`, requires the `adapter-alta` role, caches the JWT in memory, and calls `GET /api/Auth/check`.
+- Transient network and HTTP 5xx failures receive up to three attempts with 1- and 2-second delays. One fresh-login retry is made after HTTP `401`.
+- Configuration reloads without restarting the process. A change received during an active probe cycle causes the next cycle to start immediately.
+- Logs identify database targets by configured name but sanitize connection strings, SQL passwords, Core passwords, and JWTs.
 
 ## Build and test
 
-From PowerShell:
+Use the .NET 10 SDK:
 
 ```powershell
-dotnet restore .\Logibooks.Alta.sln
+dotnet restore .\Logibooks.Alta.Tests\Logibooks.Alta.Tests.csproj
 dotnet test .\Logibooks.Alta.Tests\Logibooks.Alta.Tests.csproj --configuration Release
 dotnet publish .\Logibooks.Alta.Service\Logibooks.Alta.Service.csproj `
   --configuration Release --runtime win-x64 --self-contained true `
   -p:PublishProfile=win-x64
 ```
 
-Build the Visual Studio installer project and its self-contained publish output with:
+Visual Studio 2022 or 2026 with **Microsoft Visual Studio Installer Projects 3.x** is required to build the MSI:
 
 ```powershell
 .\scripts\Build-Installer.ps1 -Configuration Release
@@ -44,23 +36,11 @@ Build the Visual Studio installer project and its self-contained publish output 
 
 The MSI is written to `Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.msi`.
 
-## Install and configure
+## Production installation and configuration
 
-Run the MSI as an administrator. It installs the binaries under:
+Run the per-machine MSI as an administrator. It installs the service under `%ProgramFiles%\Logibooks\Alta` and creates `%ProgramData%\Logibooks\Alta\appsettings.json` only when that file is absent. Administrators and SYSTEM receive full access; `LocalService` receives read access. Upgrades and uninstall preserve the configuration.
 
-```text
-%ProgramFiles%\Logibooks\Alta
-```
-
-The first install creates this configuration file only when it does not already exist:
-
-```text
-%ProgramData%\Logibooks\Alta\appsettings.json
-```
-
-The installer grants full access only to Administrators and SYSTEM, and read access to `LocalService`. Upgrades and uninstall preserve the file.
-
-Initial configuration:
+Version 0.2.0 deliberately does not read or migrate `ConnectionStrings.AltaDatabase`. An existing 0.1.0 configuration is preserved by the MSI but must be manually replaced with the new `Databases` contract before enabling the service:
 
 ```json
 {
@@ -68,10 +48,23 @@ Initial configuration:
     "Enabled": false,
     "PollIntervalSeconds": 60
   },
-  "ConnectionStrings": {
-    "AltaDatabase": "Server=tcp:sql.example;Database=Alta;User ID=alta;Password=replace-me;Encrypt=True;TrustServerCertificate=False"
+  "Databases": {
+    "MaxConcurrentProbes": 4,
+    "Targets": [
+      {
+        "Name": "PrimaryAccounting",
+        "Enabled": true,
+        "ConnectionString": "Server=tcp:sql.example;Database=Accounting;User ID=alta;Password=replace-me;Encrypt=True;TrustServerCertificate=False"
+      },
+      {
+        "Name": "Archive",
+        "Enabled": false,
+        "ConnectionString": "Server=tcp:archive.example;Database=Archive;User ID=alta;Password=replace-me;Encrypt=True;TrustServerCertificate=False"
+      }
+    ]
   },
   "Core": {
+    "Enabled": true,
     "BaseUrl": "https://core.example/",
     "Email": "alta@example.com",
     "Password": "replace-me",
@@ -81,13 +74,53 @@ Initial configuration:
 }
 ```
 
-Set `Service.Enabled` to `true` only after all required values are valid. The service notices a saved configuration change and starts probing immediately. `Core.BaseUrl` must be an absolute HTTPS URL; certificate validation uses the Windows trusted certificate store.
+Target names must be nonempty and unique among enabled targets. Enabled targets need valid SQL connection strings. `Databases.MaxConcurrentProbes` accepts 1–32 and defaults to 4. When `Service.Enabled` is true, at least one database target must be enabled. Core URL and credentials are required only when both `Service.Enabled` and `Core.Enabled` are true; Core defaults to enabled.
 
-Operational events appear in **Event Viewer → Windows Logs → Application** with source `Logibooks Alta Adapter`. Passwords, connection strings, and JWTs are never intentionally logged.
+Set `Service.Enabled` to true only after configuration is valid. Operational events appear in **Event Viewer → Windows Logs → Application** with source `Logibooks Alta Adapter`.
 
-## Service command-line operations
+The full configuration file can be overridden with `LOGIBOOKS_ALTA_CONFIG_PATH`. Without the override, the default is ProgramData on Windows and `/etc/logibooks/alta/appsettings.json` on Linux.
 
-The published executable supports the commands used by the MSI:
+## Development Compose environment
+
+The default development stack contains:
+
+- SQL Server `2025-CU7-ubuntu-24.04`, bound to `127.0.0.1:1433`.
+- An idempotent restore job for `D:\Projects\logibooks\AltaDB\gtk_2026-07-30.bak` only.
+- The Linux adapter monitoring `gtk` as `AltaInstance3`, with Core disabled.
+- Adminer 5.5.0 with its FreeTDS `pdo_dblib` MSSQL driver, at [http://localhost:8083](http://localhost:8083).
+
+The 142 GB `reestr_1_1.bak` backup is intentionally excluded from automatic startup. SQL system databases plus `gtk.mdf` and `gtk_log.ldf` persist under `D:\Projects\logibooks\AltaInstance3`.
+
+Start Docker Desktop, then run:
+
+```powershell
+.\scripts\Start-Development.ps1
+docker compose logs --follow adapter
+```
+
+The helper checks Docker, verifies the backup, creates the data directory, creates an ignored `.env` with policy-compliant generated passwords when absent, and starts the stack. Paths and loopback ports can be changed in `.env`; `.env.example` documents the contract. The adapter connects through the dedicated `alta_adapter` login, which has `CONNECT` and `db_datareader` only.
+
+### Visual Studio Docker Compose project
+
+The solution includes a `Microsoft.Docker.Sdk` Docker Compose project equivalent to the sibling Core solution. Visual Studio Container Tools are required. The project can be loaded before `.env` exists; run `Start-Development.ps1` before the first Compose launch to create the ignored `.env` and required host directory, then select one of these startup profiles in Visual Studio:
+
+- **Docker Compose** starts the complete dependency-aware stack and attaches the debugger to `adapter`.
+- **Docker Compose (Adminer)** starts the complete stack without attaching a debugger and opens Adminer in the browser.
+
+The project uses regular container build mode because the adapter Dockerfile is also the reproducible CLI and CI development image. Visual Studio honors SQL health and restore completion through `DependencyAwareStart` before starting the adapter.
+
+Normal `docker compose down` / `up` preserves the database and skips restoration when `gtk` already exists. For one clean restore, use the guarded reset helper and type its exact confirmation phrase:
+
+```powershell
+.\scripts\Reset-Development.ps1
+.\scripts\Start-Development.ps1
+```
+
+The reset helper rejects empty, root, repository, backup, and unexpected target paths and deletes only the resolved `AltaInstance3` directory contents.
+
+## Service commands
+
+The Windows publish supports the MSI custom actions:
 
 ```powershell
 Logibooks.Alta.Adapter.exe /Version
@@ -96,29 +129,15 @@ Logibooks.Alta.Adapter.exe /Rollback
 Logibooks.Alta.Adapter.exe /Uninstall
 ```
 
-`/Install`, `/Rollback`, and `/Uninstall` require administrator rights. Installation is idempotent. Rollback and uninstall remove only the Windows service registration; they do not remove ProgramData configuration.
+Install, rollback, and uninstall commands return a clear unsupported-platform error on Linux. Uninstall removes service registration but preserves ProgramData configuration.
 
 ## Versioning and releases
 
-Checked-in version locations are synchronized at `0.1.0`. To prepare another release:
+Checked-in version locations are synchronized at `0.2.0`. To prepare a future release:
 
 ```powershell
-.\scripts\Set-Version.ps1 0.2.0
-git commit -am "Release 0.2.0"
-git tag v0.2.0
-git push origin main --tags
+.\scripts\Set-Version.ps1 0.3.0
+.\scripts\Test-Version.ps1 -ExpectedVersion 0.3.0
 ```
 
-The version script validates MSI-compatible `X.Y.Z`, updates executable and installer metadata, creates fresh MSI `ProductCode` and `PackageCode` values, and preserves the stable `UpgradeCode`. `vX.Y.Z` tags are authoritative; release automation rejects a tag that does not match the checked-in version, then publishes the MSI and its SHA-256 checksum to the GitHub release.
-
-## Administrative smoke test
-
-Use a disposable Windows test host with test-only MSSQL and Core credentials:
-
-1. Install the MSI as administrator and confirm `Logibooks Alta Adapter` is running but idle.
-2. Save valid test configuration with `Service.Enabled` set to `true`.
-3. Confirm successful MSSQL and Core probe events in Event Viewer.
-4. Build a higher test version with `Set-Version.ps1`, install it, and confirm the existing ProgramData configuration remains unchanged.
-5. Uninstall from Apps & features and confirm the service and Program Files directory are removed while ProgramData configuration remains.
-
-Do not use production credentials for this test.
+The version script updates executable, Docker development, and installer metadata; creates fresh MSI `ProductCode` and `PackageCode` values; and preserves the stable `UpgradeCode`. Tags named `vX.Y.Z` are authoritative. Pull requests and `main` run Windows tests/MSI validation plus Linux tests/Compose validation/image builds. Version tags publish only the MSI and SHA-256 checksum as GitHub release artifacts; development container images are not published.

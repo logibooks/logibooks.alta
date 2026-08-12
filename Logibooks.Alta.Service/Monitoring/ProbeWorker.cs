@@ -42,12 +42,70 @@ internal sealed class ProbeWorker(
             }
 
             LogStateChange(true);
-            await RunProbeAsync("MSSQL", mssqlProbe.ProbeAsync, configuration, stoppingToken);
-            await RunProbeAsync("Logibooks Core", coreApiProbe.ProbeAsync, configuration, stoppingToken);
+            var cycleTasks = new List<Task>
+            {
+                RunDatabaseProbesAsync(configuration, stoppingToken)
+            };
+            if (configuration.Core.Enabled)
+            {
+                cycleTasks.Add(RunProbeAsync(
+                    "Logibooks Core",
+                    coreApiProbe.ProbeAsync,
+                    configuration,
+                    stoppingToken));
+            }
+
+            await Task.WhenAll(cycleTasks);
 
             await reloadSignal.WaitAsync(
                 TimeSpan.FromSeconds(configuration.Service.PollIntervalSeconds),
                 stoppingToken);
+        }
+    }
+
+    private async Task RunDatabaseProbesAsync(
+        RuntimeConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        using var limiter = new SemaphoreSlim(configuration.MaxConcurrentDatabaseProbes);
+        var probes = configuration.Databases.Select(async database =>
+        {
+            await limiter.WaitAsync(cancellationToken);
+            try
+            {
+                await RunDatabaseProbeAsync(database, configuration, cancellationToken);
+            }
+            finally
+            {
+                limiter.Release();
+            }
+        });
+
+        await Task.WhenAll(probes);
+    }
+
+    private async Task RunDatabaseProbeAsync(
+        RuntimeDatabaseTarget database,
+        RuntimeConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await mssqlProbe.ProbeAsync(database, cancellationToken);
+            logger.LogInformation(
+                "MSSQL probe succeeded for database target {DatabaseTarget}",
+                database.Name);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                "MSSQL probe failed for database target {DatabaseTarget}: {Failure}",
+                database.Name,
+                SensitiveDataSanitizer.Sanitize(exception.Message, configuration));
         }
     }
 

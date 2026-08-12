@@ -21,6 +21,10 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $propsPath = Join-Path $repositoryRoot 'Directory.Build.props'
 $versionInfoPath = Join-Path $repositoryRoot 'Logibooks.Alta.Service\VersionInfo.cs'
 $setupPath = Join-Path $repositoryRoot 'Logibooks.Alta.Setup\Logibooks.Alta.Setup.vdproj'
+$adapterDockerfilePath = Join-Path $repositoryRoot 'docker\adapter\Dockerfile'
+$composePath = Join-Path $repositoryRoot 'docker-compose.yml'
+$environmentExamplePath = Join-Path $repositoryRoot '.env.example'
+$startDevelopmentPath = Join-Path $repositoryRoot 'scripts\Start-Development.ps1'
 $utf8 = [System.Text.UTF8Encoding]::new($false)
 
 function Update-TextFile {
@@ -58,6 +62,26 @@ Update-TextFile $setupPath {
     $text = $text -replace '"ProductVersion" = "8:[^"]+"', "`"ProductVersion`" = `"8:$Version`""
     $text = $text -replace '"ProductCode" = "8:\{[^}]+\}"', "`"ProductCode`" = `"8:$productCode`""
     $text -replace '"PackageCode" = "8:\{[^}]+\}"', "`"PackageCode`" = `"8:$packageCode`""
+}
+
+Update-TextFile $adapterDockerfilePath {
+    param($text)
+    $text -replace 'ARG VERSION=\d+\.\d+\.\d+', "ARG VERSION=$Version"
+}
+
+Update-TextFile $composePath {
+    param($text)
+    $text -replace 'ALTA_VERSION:-\d+\.\d+\.\d+', "ALTA_VERSION:-$Version"
+}
+
+Update-TextFile $environmentExamplePath {
+    param($text)
+    $text -replace 'ALTA_VERSION=\d+\.\d+\.\d+', "ALTA_VERSION=$Version"
+}
+
+Update-TextFile $startDevelopmentPath {
+    param($text)
+    $text -replace "ALTA_VERSION=\d+\.\d+\.\d+", "ALTA_VERSION=$Version"
 }
 
 & (Join-Path $PSScriptRoot 'Test-Version.ps1') -ExpectedVersion $Version
