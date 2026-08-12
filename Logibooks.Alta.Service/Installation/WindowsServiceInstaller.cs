@@ -1,4 +1,5 @@
 using System.ServiceProcess;
+using System.Runtime.Versioning;
 
 namespace Logibooks.Alta.Installation;
 
@@ -166,6 +167,7 @@ internal interface IServiceStopWaiter
     void WaitForStopped(TimeSpan timeout);
 }
 
+[SupportedOSPlatform("windows")]
 internal sealed class WindowsServiceStopWaiter : IServiceStopWaiter
 {
     public void WaitForStopped(TimeSpan timeout)

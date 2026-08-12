@@ -20,6 +20,13 @@ public sealed class VersionConsistencyTests
             "Logibooks.Alta.Setup",
             "Logibooks.Alta.Setup.vdproj"));
         var installerVersion = ReadGroup(installer, "\"ProductVersion\" = \"8:([^\"]+)\"");
+        var dockerfile = File.ReadAllText(Path.Combine(root, "docker", "adapter", "Dockerfile"));
+        var compose = File.ReadAllText(Path.Combine(root, "docker-compose.yml"));
+        var environmentExample = File.ReadAllText(Path.Combine(root, ".env.example"));
+        var startDevelopment = File.ReadAllText(Path.Combine(root, "scripts", "Start-Development.ps1"));
+        var dockerVersions = Regex.Matches(dockerfile, @"ARG VERSION=(\d+\.\d+\.\d+)")
+            .Select(match => match.Groups[1].Value)
+            .ToArray();
         var serviceAssembly = typeof(VersionInfo).Assembly;
         var assemblyVersion = serviceAssembly.GetName().Version;
         var assemblyInformationalVersion = serviceAssembly
@@ -32,6 +39,10 @@ public sealed class VersionConsistencyTests
             Assert.That(VersionInfo.AppVersion, Is.EqualTo(projectVersion));
             Assert.That(informationalVersion, Is.EqualTo(projectVersion));
             Assert.That(installerVersion, Is.EqualTo(projectVersion));
+            Assert.That(dockerVersions, Is.EqualTo(new[] { projectVersion, projectVersion }));
+            Assert.That(ReadGroup(compose, @"ALTA_VERSION:-(\d+\.\d+\.\d+)"), Is.EqualTo(projectVersion));
+            Assert.That(ReadGroup(environmentExample, @"ALTA_VERSION=(\d+\.\d+\.\d+)"), Is.EqualTo(projectVersion));
+            Assert.That(ReadGroup(startDevelopment, @"ALTA_VERSION=(\d+\.\d+\.\d+)"), Is.EqualTo(projectVersion));
             Assert.That(assemblyVersion?.ToString(), Is.EqualTo($"{projectVersion}.0"));
             Assert.That(assemblyInformationalVersion, Is.EqualTo(projectVersion));
             Assert.That(fileVersion, Is.EqualTo($"{projectVersion}.0"));
@@ -72,6 +83,51 @@ public sealed class VersionConsistencyTests
             Assert.That(installer, Does.Contain("\"Arguments\" = \"8:/Uninstall\""));
             Assert.That(installer, Does.Contain("\"InstallAllUsers\" = \"11:TRUE\""));
             Assert.That(installer, Does.Contain("\"TargetPlatform\" = \"3:1\""));
+        });
+    }
+
+    [Test]
+    public void ProjectsAndPublishProfile_SupportLinuxAndPreserveWindowsInstallerPublish()
+    {
+        var root = FindRepositoryRoot();
+        var serviceProject = XDocument.Load(Path.Combine(
+            root,
+            "Logibooks.Alta.Service",
+            "Logibooks.Alta.Service.csproj"));
+        var testsProject = XDocument.Load(Path.Combine(
+            root,
+            "Logibooks.Alta.Tests",
+            "Logibooks.Alta.Tests.csproj"));
+        var publishProfile = XDocument.Load(Path.Combine(
+            root,
+            "Logibooks.Alta.Service",
+            "Properties",
+            "PublishProfiles",
+            "win-x64.pubxml"));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(serviceProject.Descendants("TargetFramework").Single().Value, Is.EqualTo("net10.0"));
+            Assert.That(serviceProject.Descendants("RuntimeIdentifiers").Single().Value.Split(';'),
+                Is.EquivalentTo(new[] { "win-x64", "linux-x64" }));
+            Assert.That(testsProject.Descendants("TargetFramework").Single().Value, Is.EqualTo("net10.0"));
+            Assert.That(publishProfile.Descendants("RuntimeIdentifier").Single().Value, Is.EqualTo("win-x64"));
+            Assert.That(publishProfile.Descendants("SelfContained").Single().Value, Is.EqualTo("true"));
+        });
+    }
+
+    [Test]
+    public void Program_RegistersWindowsIntegrationOnlyOnWindows()
+    {
+        var root = FindRepositoryRoot();
+        var program = File.ReadAllText(Path.Combine(root, "Logibooks.Alta.Service", "Program.cs"));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(program, Does.Contain("if (OperatingSystem.IsWindows())"));
+            Assert.That(program, Does.Contain("AddWindowsService"));
+            Assert.That(program, Does.Contain("AddEventLog"));
+            Assert.That(program, Does.Contain("Service installation commands are supported only on Windows."));
         });
     }
 

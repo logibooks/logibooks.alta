@@ -26,12 +26,27 @@ function Read-Match {
 $propsPath = Join-Path $repositoryRoot 'Directory.Build.props'
 $versionInfoPath = Join-Path $repositoryRoot 'Logibooks.Alta.Service\VersionInfo.cs'
 $setupPath = Join-Path $repositoryRoot 'Logibooks.Alta.Setup\Logibooks.Alta.Setup.vdproj'
+$adapterDockerfilePath = Join-Path $repositoryRoot 'docker\adapter\Dockerfile'
+$composePath = Join-Path $repositoryRoot 'docker-compose.yml'
+$environmentExamplePath = Join-Path $repositoryRoot '.env.example'
+$startDevelopmentPath = Join-Path $repositoryRoot 'scripts\Start-Development.ps1'
 
 $versions = [ordered]@{
     Project = Read-Match $propsPath '<Version>([^<]+)</Version>' 'project version'
     Informational = Read-Match $propsPath '<InformationalVersion>([^<]+)</InformationalVersion>' 'informational version'
     VersionInfo = Read-Match $versionInfoPath 'AppVersion = "([^"]+)"' 'VersionInfo.AppVersion'
     Installer = Read-Match $setupPath '"ProductVersion" = "8:([^"]+)"' 'MSI ProductVersion'
+    AdapterImage = Read-Match $adapterDockerfilePath 'ARG VERSION=(\d+\.\d+\.\d+)' 'adapter image version'
+    Compose = Read-Match $composePath 'ALTA_VERSION:-(\d+\.\d+\.\d+)' 'Compose version'
+    EnvironmentExample = Read-Match $environmentExamplePath 'ALTA_VERSION=(\d+\.\d+\.\d+)' '.env.example version'
+    DevelopmentHelper = Read-Match $startDevelopmentPath 'ALTA_VERSION=(\d+\.\d+\.\d+)' 'development helper version'
+}
+
+$dockerfileVersions = [regex]::Matches(
+    [System.IO.File]::ReadAllText($adapterDockerfilePath),
+    'ARG VERSION=(\d+\.\d+\.\d+)') | ForEach-Object { $_.Groups[1].Value }
+if ($dockerfileVersions.Count -ne 2 -or @($dockerfileVersions | Select-Object -Unique).Count -ne 1) {
+    throw 'The adapter Dockerfile must contain two matching VERSION build arguments.'
 }
 
 $distinctVersions = @($versions.Values | Select-Object -Unique)

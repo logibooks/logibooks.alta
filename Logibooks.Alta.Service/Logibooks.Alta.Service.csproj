@@ -1,12 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk.Worker">
   <PropertyGroup>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <OutputType>Exe</OutputType>
     <RootNamespace>Logibooks.Alta</RootNamespace>
     <AssemblyName>Logibooks.Alta.Adapter</AssemblyName>
     <ApplicationIcon>Assets\Logibooks.Alta.Adapter.ico</ApplicationIcon>
     <Platforms>AnyCPU;x64</Platforms>
-    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <RuntimeIdentifiers>win-x64;linux-x64</RuntimeIdentifiers>
+    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+    <DockerComposeProjectPath>..\docker-compose.dcproj</DockerComposeProjectPath>
   </PropertyGroup>
 
   <ItemGroup>

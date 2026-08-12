@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using System.Net.Sockets;
+using Logibooks.Alta.Configuration;
 
 namespace Logibooks.Alta.Database;
 
@@ -42,7 +43,6 @@ internal sealed class SqlDatabaseConnection(SqlConnection connection) : IDatabas
 }
 
 internal sealed class MssqlProbe(
-    IConfiguration configuration,
     IDatabaseConnectionFactory connectionFactory,
     IDatabaseRetryDelay retryDelay) : IMssqlProbe
 {
@@ -55,19 +55,21 @@ internal sealed class MssqlProbe(
         40_197, 40_501, 40_613, 49_918, 49_919, 49_920, 10_928, 10_929
     ];
 
-    public async Task ProbeAsync(CancellationToken cancellationToken)
+    public async Task ProbeAsync(
+        RuntimeDatabaseTarget database,
+        CancellationToken cancellationToken)
     {
-        var connectionString = configuration.GetConnectionString("AltaDatabase");
-        if (string.IsNullOrWhiteSpace(connectionString))
+        if (string.IsNullOrWhiteSpace(database.ConnectionString))
         {
-            throw new InvalidOperationException("The MSSQL connection is not configured.");
+            throw new InvalidOperationException(
+                $"The MSSQL connection for database target '{database.Name}' is not configured.");
         }
 
         for (var attempt = 1; attempt <= MaximumAttempts; attempt++)
         {
             try
             {
-                await ProbeOnceAsync(connectionString, cancellationToken);
+                await ProbeOnceAsync(database.ConnectionString, cancellationToken);
                 return;
             }
             catch (Exception exception) when (

@@ -1,11 +1,15 @@
 using Microsoft.Extensions.Options;
+using Microsoft.Data.SqlClient;
 
 namespace Logibooks.Alta.Configuration;
 
 internal sealed record RuntimeConfiguration(
     ServiceOptions Service,
     CoreOptions Core,
-    string DatabaseConnectionString);
+    int MaxConcurrentDatabaseProbes,
+    IReadOnlyList<RuntimeDatabaseTarget> Databases);
+
+internal sealed record RuntimeDatabaseTarget(string Name, string ConnectionString);
 
 internal interface IRuntimeConfigurationProvider
 {
@@ -15,12 +19,13 @@ internal interface IRuntimeConfigurationProvider
 internal sealed class RuntimeConfigurationProvider(
     IOptionsMonitor<ServiceOptions> serviceOptions,
     IOptionsMonitor<CoreOptions> coreOptions,
-    IConfiguration configuration) : IRuntimeConfigurationProvider
+    IOptionsMonitor<DatabaseMonitoringOptions> databaseOptions) : IRuntimeConfigurationProvider
 {
     public RuntimeConfiguration GetValidated()
     {
         var service = serviceOptions.CurrentValue;
         var core = coreOptions.CurrentValue;
+        var databases = databaseOptions.CurrentValue;
         var errors = new List<string>();
 
         if (service.PollIntervalSeconds is < 1 or > 86_400)
@@ -28,26 +33,35 @@ internal sealed class RuntimeConfigurationProvider(
             errors.Add("Service.PollIntervalSeconds must be between 1 and 86400");
         }
 
-        var connectionString = configuration.GetConnectionString("AltaDatabase") ?? string.Empty;
+        if (databases.MaxConcurrentProbes is < 1 or > 32)
+        {
+            errors.Add("Databases.MaxConcurrentProbes must be between 1 and 32");
+        }
+
+        var configuredDatabases = databases.Targets ?? [];
+        var enabledDatabases = configuredDatabases.Where(target => target.Enabled).ToArray();
         if (service.Enabled)
         {
-            if (string.IsNullOrWhiteSpace(connectionString))
+            if (enabledDatabases.Length == 0)
             {
-                errors.Add("ConnectionStrings.AltaDatabase is required when the service is enabled");
+                errors.Add("Databases.Targets must contain at least one enabled database when the service is enabled");
             }
 
-            if (!Uri.TryCreate(core.BaseUrl, UriKind.Absolute, out var baseUri) ||
-                !string.Equals(baseUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            ValidateDatabases(enabledDatabases, errors);
+
+            if (core.Enabled &&
+                (!Uri.TryCreate(core.BaseUrl, UriKind.Absolute, out var baseUri) ||
+                 !string.Equals(baseUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
             {
                 errors.Add("Core.BaseUrl must be an absolute HTTPS URL when the service is enabled");
             }
 
-            if (string.IsNullOrWhiteSpace(core.Email))
+            if (core.Enabled && string.IsNullOrWhiteSpace(core.Email))
             {
                 errors.Add("Core.Email is required when the service is enabled");
             }
 
-            if (string.IsNullOrWhiteSpace(core.Password))
+            if (core.Enabled && string.IsNullOrWhiteSpace(core.Password))
             {
                 errors.Add("Core.Password is required when the service is enabled");
             }
@@ -68,8 +82,53 @@ internal sealed class RuntimeConfigurationProvider(
             throw new RuntimeConfigurationException(errors);
         }
 
-        return new RuntimeConfiguration(Clone(service), Clone(core), connectionString);
+        return new RuntimeConfiguration(
+            Clone(service),
+            Clone(core),
+            databases.MaxConcurrentProbes,
+            enabledDatabases
+                .Select(target => new RuntimeDatabaseTarget(
+                    target.Name?.Trim() ?? string.Empty,
+                    target.ConnectionString ?? string.Empty))
+                .ToArray());
     }
+
+    private static void ValidateDatabases(
+        IReadOnlyCollection<DatabaseTargetOptions> databases,
+        ICollection<string> errors)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var database in databases)
+        {
+            var name = database.Name?.Trim() ?? string.Empty;
+            if (name.Length == 0)
+            {
+                errors.Add("Every enabled Databases.Targets entry must have a nonempty Name");
+            }
+            else if (!names.Add(name))
+            {
+                errors.Add($"Databases.Targets contains duplicate enabled name '{name}'");
+            }
+
+            var connectionString = database.ConnectionString ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                errors.Add($"Database target '{DisplayName(name)}' requires a ConnectionString");
+                continue;
+            }
+
+            try
+            {
+                _ = new SqlConnectionStringBuilder(connectionString);
+            }
+            catch (ArgumentException)
+            {
+                errors.Add($"Database target '{DisplayName(name)}' has an invalid ConnectionString");
+            }
+        }
+    }
+
+    private static string DisplayName(string name) => name.Length == 0 ? "<unnamed>" : name;
 
     private static ServiceOptions Clone(ServiceOptions value) => new()
     {
@@ -79,9 +138,10 @@ internal sealed class RuntimeConfigurationProvider(
 
     private static CoreOptions Clone(CoreOptions value) => new()
     {
-        BaseUrl = value.BaseUrl.Trim(),
-        Email = value.Email.Trim(),
-        Password = value.Password,
+        Enabled = value.Enabled,
+        BaseUrl = value.BaseUrl?.Trim() ?? string.Empty,
+        Email = value.Email?.Trim() ?? string.Empty,
+        Password = value.Password ?? string.Empty,
         RequestTimeoutSeconds = value.RequestTimeoutSeconds,
         JwtRefreshSkewMinutes = value.JwtRefreshSkewMinutes
     };

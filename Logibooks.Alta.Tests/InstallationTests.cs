@@ -1,6 +1,7 @@
 using Logibooks.Alta.Installation;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Runtime.Versioning;
 
 namespace Logibooks.Alta.Tests;
 
@@ -221,6 +222,8 @@ public sealed class ConfigurationProvisionerTests
 }
 
 [TestFixture]
+[Platform(Include = "Win")]
+[SupportedOSPlatform("windows")]
 public sealed class WindowsFileAclProtectorTests
 {
     [Test]
