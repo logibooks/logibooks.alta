@@ -207,6 +207,23 @@ public sealed class CoreSessionManagerTests
         Assert.That(handler.Calls, Is.EqualTo(2));
     }
 
+    [Test]
+    public void GetTokenAsync_PreservesMalformedJwtParsingFailure()
+    {
+        var handler = LoginHandler(_ => LoginResponse("not-a-jwt", "adapter-alta"));
+        using var session = CreateSession(handler, ValidOptions(), new MutableTimeProvider(Now));
+
+        var exception = Assert.ThrowsAsync<CoreAuthenticationException>(
+            async () => await session.GetTokenAsync(CancellationToken.None));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception!.Message, Is.EqualTo("Logibooks Core returned a malformed JWT."));
+            Assert.That(exception.InnerException, Is.InstanceOf<ArgumentException>());
+            Assert.That(exception.InnerException!.Message, Is.Not.Empty);
+        });
+    }
+
     private static CoreSessionManager CreateSession(
         RecordingHttpHandler handler,
         CoreOptions options,
@@ -300,6 +317,26 @@ public sealed class JwtSessionHandlerTests
         Assert.That(session.GetTokenCalls, Is.EqualTo(2));
     }
 
+    [Test]
+    public void SendAsync_DisposesRetryRequestWhenSecondSendThrows()
+    {
+        var session = new StubSessionManager("old-token", "new-token");
+        var inner = new ThrowingRetryHandler();
+        using var client = new HttpClient(new JwtSessionHandler(session) { InnerHandler = inner });
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://core.example/api/Auth/check")
+        {
+            Content = new StringContent("probe")
+        };
+
+        Assert.That(
+            async () => await client.SendAsync(request),
+            Throws.TypeOf<HttpRequestException>());
+        Assert.That(inner.RetryRequest, Is.Not.Null);
+        Assert.That(
+            async () => await inner.RetryRequest!.Content!.ReadAsByteArrayAsync(),
+            Throws.TypeOf<ObjectDisposedException>());
+    }
+
     private sealed class StubSessionManager(params string[] tokens) : ICoreSessionManager
     {
         private readonly Queue<string> _tokens = new(tokens);
@@ -313,6 +350,25 @@ public sealed class JwtSessionHandlerTests
         }
 
         public void InvalidateToken(string token) => InvalidatedTokens.Add(token);
+    }
+
+    private sealed class ThrowingRetryHandler : HttpMessageHandler
+    {
+        private int _calls;
+        public HttpRequestMessage? RetryRequest { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
+            }
+
+            RetryRequest = request;
+            throw new HttpRequestException("The retry failed.");
+        }
     }
 }
 

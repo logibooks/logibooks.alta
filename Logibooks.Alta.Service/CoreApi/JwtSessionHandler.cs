@@ -9,14 +9,13 @@ internal sealed class JwtSessionHandler(ICoreSessionManager sessionManager) : De
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
-        var retryRequest = await CloneAsync(request, cancellationToken);
+        using var retryRequest = await CloneAsync(request, cancellationToken);
         var token = await sessionManager.GetTokenAsync(cancellationToken);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         var response = await base.SendAsync(request, cancellationToken);
         if (response.StatusCode != HttpStatusCode.Unauthorized)
         {
-            retryRequest.Dispose();
             return response;
         }
 

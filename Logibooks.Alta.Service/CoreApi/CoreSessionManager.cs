@@ -144,10 +144,9 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
         }
         catch (ArgumentException exception)
         {
-            throw new CoreAuthenticationException("Logibooks Core returned a malformed JWT.")
-            {
-                Source = exception.Source
-            };
+            throw new CoreAuthenticationException(
+                "Logibooks Core returned a malformed JWT.",
+                exception);
         }
     }
 
