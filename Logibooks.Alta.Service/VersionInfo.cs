@@ -2,9 +2,16 @@
 // All rights reserved.
 // This file is a part of Logibooks Alta adapter
 
+using System.Reflection;
+
 namespace Logibooks.Alta;
 
 public static class VersionInfo
 {
-    public const string AppVersion = "0.2.1";
+    public static string AppVersion { get; } =
+        typeof(VersionInfo).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion
+        ?? typeof(VersionInfo).Assembly.GetName().Version?.ToString(3)
+        ?? "Unknown";
 }

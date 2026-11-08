@@ -133,11 +133,14 @@ Install, rollback, and uninstall commands return a clear unsupported-platform er
 
 ## Versioning and releases
 
-Checked-in version locations are synchronized at `0.2.1`. To prepare a future release:
+Set the version for a release with one command:
 
 ```powershell
 .\scripts\Set-Version.ps1 0.3.0
-.\scripts\Test-Version.ps1 -ExpectedVersion 0.3.0
 ```
 
-The version script updates executable, Docker development, and installer metadata; creates fresh MSI `ProductCode` and `PackageCode` values; and preserves the stable `UpgradeCode`. Tags named `vX.Y.Z` are authoritative. Pull requests and `main` run Windows tests/MSI validation plus Linux tests/Compose validation/image builds. Version tags publish only the MSI and SHA-256 checksum as GitHub release artifacts; development container images are not published.
+`Directory.Build.props` supplies the version for local builds, Windows publishes, and the adapter in Docker. The command sets that version and synchronizes the Visual Studio installer project. When the MSI version changes, it regenerates `ProductCode` and `PackageCode` and preserves the stable `UpgradeCode`.
+
+Compose ignores `ALTA_VERSION` entries in existing `.env` files. Use `docker compose run --rm --no-deps adapter --version` to read the version built into the development image.
+
+Release tags must match the project version (`vX.Y.Z`). Pull requests and `main` run Windows tests and MSI validation alongside Linux tests and development image builds. Version tags publish the MSI and its SHA-256 checksum.

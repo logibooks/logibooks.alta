@@ -86,8 +86,7 @@ if (-not $environmentExists) {
         "ALTA_BACKUP_DIR=$(Convert-ToComposePath $BackupDirectory)",
         "ALTA_INSTANCE3_DIR=$(Convert-ToComposePath $DataDirectory)",
         "MSSQL_PORT=$SqlPort",
-        "ADMINER_PORT=$AdminerPort",
-        'ALTA_VERSION=0.2.1'
+        "ADMINER_PORT=$AdminerPort"
     )
     [System.IO.File]::WriteAllLines($environmentPath, $lines, [System.Text.UTF8Encoding]::new($false))
     Write-Host "Created ignored development settings at $environmentPath."

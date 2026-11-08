@@ -13,24 +13,16 @@ namespace Logibooks.Alta.Tests;
 public sealed class VersionConsistencyTests
 {
     [Test]
-    public void CheckedInVersion_IsConsistentAcrossCodeProjectAndInstaller()
+    public void ProjectVersion_MatchesServiceAssemblyAndInstaller()
     {
         var root = FindRepositoryRoot();
         var props = XDocument.Load(Path.Combine(root, "Directory.Build.props"));
         var projectVersion = props.Descendants("Version").Single().Value;
-        var informationalVersion = props.Descendants("InformationalVersion").Single().Value;
         var installer = File.ReadAllText(Path.Combine(
             root,
             "Logibooks.Alta.Setup",
             "Logibooks.Alta.Setup.vdproj"));
-        var installerVersion = ReadGroup(installer, "\"ProductVersion\" = \"8:([^\"]+)\"");
-        var dockerfile = File.ReadAllText(Path.Combine(root, "docker", "adapter", "Dockerfile"));
-        var compose = File.ReadAllText(Path.Combine(root, "docker-compose.yml"));
-        var environmentExample = File.ReadAllText(Path.Combine(root, ".env.example"));
-        var startDevelopment = File.ReadAllText(Path.Combine(root, "scripts", "Start-Development.ps1"));
-        var dockerVersions = Regex.Matches(dockerfile, @"ARG VERSION=(\d+\.\d+\.\d+)")
-            .Select(match => match.Groups[1].Value)
-            .ToArray();
+        var installerVersion = Regex.Match(installer, "\"ProductVersion\" = \"8:([^\"]+)\"").Groups[1].Value;
         var serviceAssembly = typeof(VersionInfo).Assembly;
         var assemblyVersion = serviceAssembly.GetName().Version;
         var assemblyInformationalVersion = serviceAssembly
@@ -41,12 +33,7 @@ public sealed class VersionConsistencyTests
         Assert.Multiple(() =>
         {
             Assert.That(VersionInfo.AppVersion, Is.EqualTo(projectVersion));
-            Assert.That(informationalVersion, Is.EqualTo(projectVersion));
             Assert.That(installerVersion, Is.EqualTo(projectVersion));
-            Assert.That(dockerVersions, Is.EqualTo(new[] { projectVersion, projectVersion }));
-            Assert.That(ReadGroup(compose, @"ALTA_VERSION:-(\d+\.\d+\.\d+)"), Is.EqualTo(projectVersion));
-            Assert.That(ReadGroup(environmentExample, @"ALTA_VERSION=(\d+\.\d+\.\d+)"), Is.EqualTo(projectVersion));
-            Assert.That(ReadGroup(startDevelopment, @"ALTA_VERSION=(\d+\.\d+\.\d+)"), Is.EqualTo(projectVersion));
             Assert.That(assemblyVersion?.ToString(), Is.EqualTo($"{projectVersion}.0"));
             Assert.That(assemblyInformationalVersion, Is.EqualTo(projectVersion));
             Assert.That(fileVersion, Is.EqualTo($"{projectVersion}.0"));
@@ -164,13 +151,6 @@ public sealed class VersionConsistencyTests
             Assert.That(installer, Does.Contain("\"ProductName\" = \"8:Logibooks Alta Adapter\""));
             Assert.That(installer, Does.Contain("\"ARPPRODUCTICON\" = \"8:_ALTA_PRODUCT_ICON\""));
         });
-    }
-
-    private static string ReadGroup(string text, string pattern)
-    {
-        var match = Regex.Match(text, pattern);
-        Assert.That(match.Success, Is.True, $"Pattern was not found: {pattern}");
-        return match.Groups[1].Value;
     }
 
     private static string FindRepositoryRoot()
