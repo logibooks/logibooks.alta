@@ -11,6 +11,8 @@ $serviceProject = Join-Path $repositoryRoot 'Logibooks.Alta.Service\Logibooks.Al
 $solution = Join-Path $repositoryRoot 'Logibooks.Alta.sln'
 $setupProject = Join-Path $repositoryRoot 'Logibooks.Alta.Setup\Logibooks.Alta.Setup.vdproj'
 
+& (Join-Path $PSScriptRoot 'Test-Version.ps1')
+
 if (-not $NoRestore) {
     & dotnet restore $serviceProject --runtime win-x64
     if ($LASTEXITCODE -ne 0) {

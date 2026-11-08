@@ -5,84 +5,52 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-
-if ($Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+$parsedVersion = $null
+if ($Version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z' -or
+    -not [version]::TryParse($Version, [ref] $parsedVersion)) {
     throw "Version '$Version' is invalid. Expected X.Y.Z with non-negative integers and no leading zeroes."
 }
 
-$major = [int] $Matches[1]
-$minor = [int] $Matches[2]
-$patch = [int] $Matches[3]
-if ($major -gt 255 -or $minor -gt 255 -or $patch -gt 65535) {
+if ($parsedVersion.Major -gt 255 -or $parsedVersion.Minor -gt 255 -or $parsedVersion.Build -gt 65535) {
     throw "Version '$Version' exceeds Windows Installer limits (major/minor <= 255, patch <= 65535)."
 }
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $propsPath = Join-Path $repositoryRoot 'Directory.Build.props'
-$versionInfoPath = Join-Path $repositoryRoot 'Logibooks.Alta.Service\VersionInfo.cs'
 $setupPath = Join-Path $repositoryRoot 'Logibooks.Alta.Setup\Logibooks.Alta.Setup.vdproj'
-$adapterDockerfilePath = Join-Path $repositoryRoot 'docker\adapter\Dockerfile'
-$composePath = Join-Path $repositoryRoot 'docker-compose.yml'
-$environmentExamplePath = Join-Path $repositoryRoot '.env.example'
-$startDevelopmentPath = Join-Path $repositoryRoot 'scripts\Start-Development.ps1'
 $utf8 = [System.Text.UTF8Encoding]::new($false)
 
-function Update-TextFile {
-    param(
-        [Parameter(Mandatory)] [string] $Path,
-        [Parameter(Mandatory)] [scriptblock] $Transform
-    )
+$props = [System.IO.File]::ReadAllText($propsPath)
+$projectVersionPattern = '<Version>[^<]+</Version>'
+if ([regex]::Matches($props, $projectVersionPattern).Count -ne 1) {
+    throw "Expected one Version property in '$propsPath'."
+}
+$updatedProps = $props -creplace $projectVersionPattern, "<Version>$Version</Version>"
 
-    $original = [System.IO.File]::ReadAllText($Path)
-    $updated = & $Transform $original
-    if ($updated -eq $original) {
-        throw "No version update was made in '$Path'."
+$setup = [System.IO.File]::ReadAllText($setupPath)
+$installerVersionPattern = '"ProductVersion" = "8:([^"]+)"'
+$installerVersions = [regex]::Matches($setup, $installerVersionPattern)
+if ($installerVersions.Count -ne 1) {
+    throw "Expected one ProductVersion in '$setupPath'."
+}
+
+if ($installerVersions[0].Groups[1].Value -cne $Version) {
+    $updatedSetup = $setup -creplace $installerVersionPattern, ('"ProductVersion" = "8:{0}"' -f $Version)
+    foreach ($field in 'ProductCode', 'PackageCode') {
+        $pattern = '"{0}" = "8:\{{[^}}]+\}}"' -f $field
+        if ([regex]::Matches($updatedSetup, $pattern).Count -ne 1) {
+            throw "Expected one $field in '$setupPath'."
+        }
+
+        $code = ([guid]::NewGuid()).ToString('B').ToUpperInvariant()
+        $updatedSetup = $updatedSetup -creplace $pattern, ('"{0}" = "8:{1}"' -f $field, $code)
     }
 
-    [System.IO.File]::WriteAllText($Path, $updated, $utf8)
+    [System.IO.File]::WriteAllText($setupPath, $updatedSetup, $utf8)
 }
 
-Update-TextFile $propsPath {
-    param($text)
-    $text = $text -replace '<Version>[^<]+</Version>', "<Version>$Version</Version>"
-    $text = $text -replace '<AssemblyVersion>[^<]+</AssemblyVersion>', "<AssemblyVersion>$Version.0</AssemblyVersion>"
-    $text = $text -replace '<FileVersion>[^<]+</FileVersion>', "<FileVersion>$Version.0</FileVersion>"
-    $text -replace '<InformationalVersion>[^<]+</InformationalVersion>', "<InformationalVersion>$Version</InformationalVersion>"
-}
-
-Update-TextFile $versionInfoPath {
-    param($text)
-    $text -replace 'AppVersion = "[^"]+"', "AppVersion = `"$Version`""
-}
-
-$productCode = ([guid]::NewGuid()).ToString('B').ToUpperInvariant()
-$packageCode = ([guid]::NewGuid()).ToString('B').ToUpperInvariant()
-Update-TextFile $setupPath {
-    param($text)
-    $text = $text -replace '"ProductVersion" = "8:[^"]+"', "`"ProductVersion`" = `"8:$Version`""
-    $text = $text -replace '"ProductCode" = "8:\{[^}]+\}"', "`"ProductCode`" = `"8:$productCode`""
-    $text -replace '"PackageCode" = "8:\{[^}]+\}"', "`"PackageCode`" = `"8:$packageCode`""
-}
-
-Update-TextFile $adapterDockerfilePath {
-    param($text)
-    $text -replace 'ARG VERSION=\d+\.\d+\.\d+', "ARG VERSION=$Version"
-}
-
-Update-TextFile $composePath {
-    param($text)
-    $text -replace 'ALTA_VERSION:-\d+\.\d+\.\d+', "ALTA_VERSION:-$Version"
-}
-
-Update-TextFile $environmentExamplePath {
-    param($text)
-    $text -replace 'ALTA_VERSION=\d+\.\d+\.\d+', "ALTA_VERSION=$Version"
-}
-
-Update-TextFile $startDevelopmentPath {
-    param($text)
-    $text -replace "ALTA_VERSION=\d+\.\d+\.\d+", "ALTA_VERSION=$Version"
+if ($updatedProps -cne $props) {
+    [System.IO.File]::WriteAllText($propsPath, $updatedProps, $utf8)
 }
 
 & (Join-Path $PSScriptRoot 'Test-Version.ps1') -ExpectedVersion $Version
-Write-Host "Updated Logibooks Alta Adapter to $Version. ProductCode and PackageCode were regenerated; UpgradeCode was preserved."

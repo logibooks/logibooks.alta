@@ -1,6 +1,9 @@
+// Copyright (C) 2026 Maxim [maxirmx] Samsonov (www.sw.consulting)
+// All rights reserved.
+// This file is a part of Logibooks Alta adapter
+
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Logibooks.Alta.Configuration;
@@ -208,12 +211,12 @@ public sealed class CoreSessionManagerTests
     }
 
     [Test]
-    public void GetTokenAsync_PreservesMalformedJwtParsingFailure()
+    public async Task GetTokenAsync_PreservesMalformedJwtParsingFailure()
     {
         var handler = LoginHandler(_ => LoginResponse("not-a-jwt", "adapter-alta"));
         using var session = CreateSession(handler, ValidOptions(), new MutableTimeProvider(Now));
 
-        var exception = Assert.ThrowsAsync<CoreAuthenticationException>(
+        var exception = await Assert.ThrowsAsync<CoreAuthenticationException>(
             async () => await session.GetTokenAsync(CancellationToken.None));
 
         Assert.Multiple(() =>

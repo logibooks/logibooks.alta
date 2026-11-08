@@ -1,3 +1,7 @@
+# Copyright (C) 2026 Maxim [maxirmx] Samsonov (www.sw.consulting)
+# All rights reserved.
+# This file is a part of Logibooks Alta adapter
+
 name: logibooks-alta
 
 services:
@@ -53,8 +57,6 @@ services:
     build:
       context: .
       dockerfile: docker/adapter/Dockerfile
-      args:
-        VERSION: ${ALTA_VERSION:-0.2.0}
     environment:
       LOGIBOOKS_ALTA_CONFIG_PATH: /etc/logibooks/alta/appsettings.json
       DOTNET_USE_POLLING_FILE_WATCHER: "1"

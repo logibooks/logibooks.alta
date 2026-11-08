@@ -77,13 +77,16 @@ if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
 
 if (-not $environmentExists) {
     $lines = @(
+        '# Copyright (C) 2026 Maxim [maxirmx] Samsonov (www.sw.consulting)',
+        '# All rights reserved.',
+        '# This file is a part of Logibooks Alta adapter',
+        '',
         "MSSQL_SA_PASSWORD=$(New-DevelopmentPassword)",
         "ALTA_DB_PASSWORD=$(New-DevelopmentPassword)",
         "ALTA_BACKUP_DIR=$(Convert-ToComposePath $BackupDirectory)",
         "ALTA_INSTANCE3_DIR=$(Convert-ToComposePath $DataDirectory)",
         "MSSQL_PORT=$SqlPort",
-        "ADMINER_PORT=$AdminerPort",
-        'ALTA_VERSION=0.2.0'
+        "ADMINER_PORT=$AdminerPort"
     )
     [System.IO.File]::WriteAllLines($environmentPath, $lines, [System.Text.UTF8Encoding]::new($false))
     Write-Host "Created ignored development settings at $environmentPath."
