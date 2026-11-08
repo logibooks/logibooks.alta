@@ -1,6 +1,6 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 
-ARG VERSION=0.2.0
+ARG VERSION=0.2.1
 WORKDIR /src
 
 COPY Directory.Build.props Directory.Packages.props global.json ./
@@ -18,7 +18,7 @@ RUN dotnet publish Logibooks.Alta.Service/Logibooks.Alta.Service.csproj \
 
 FROM mcr.microsoft.com/dotnet/runtime:10.0 AS final
 
-ARG VERSION=0.2.0
+ARG VERSION=0.2.1
 LABEL org.opencontainers.image.title="Logibooks Alta Adapter" \
       org.opencontainers.image.version="${VERSION}"
 

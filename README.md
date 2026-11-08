@@ -133,7 +133,7 @@ Install, rollback, and uninstall commands return a clear unsupported-platform er
 
 ## Versioning and releases
 
-Checked-in version locations are synchronized at `0.2.0`. To prepare a future release:
+Checked-in version locations are synchronized at `0.2.1`. To prepare a future release:
 
 ```powershell
 .\scripts\Set-Version.ps1 0.3.0
