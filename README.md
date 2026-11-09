@@ -6,7 +6,7 @@ Logibooks Alta Adapter monitors one or more Microsoft SQL Server databases and c
 
 ## Runtime behavior
 
-- Production runs as the self-contained x64 `LogibooksAltaAdapter` Windows service (`Logibooks Alta Adapter`) under `LocalService`.
+- The self-contained x64 adapter runs as the `LogibooksAltaAdapter` Windows service under `LocalService` or as a console app under the current Windows account.
 - Production SQL Server instances and databases remain external and are not installed or managed by the adapter.
 - Development can run the adapter in Linux alongside SQL Server 2025 and MSSQL-enabled Adminer through Docker Compose.
 - Each enabled target executes `SELECT CAST(1 AS int)`. Database probes run independently with bounded concurrency.
@@ -27,20 +27,24 @@ dotnet publish .\Logibooks.Alta.Service\Logibooks.Alta.Service.csproj `
   -p:PublishProfile=win-x64
 ```
 
-Visual Studio 2022 or 2026 with **Microsoft Visual Studio Installer Projects 3.x** is required to build the MSI:
+Build the Windows setup EXE with Inno Setup 6.3 or later in the 6.x series. The build script publishes the adapter and packages it.
 
 ```powershell
 .\scripts\Build-Installer.ps1 -Configuration Release
-.\scripts\Test-Installer.ps1
 ```
 
-The MSI is written to `Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.msi`.
+Setup is written to `Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe`.
 
 ## Production installation and configuration
 
-Run the per-machine MSI as an administrator. It installs the service under `%ProgramFiles%\Logibooks\Alta` and creates `%ProgramData%\Logibooks\Alta\appsettings.json` only when that file is absent. Administrators and SYSTEM receive full access; `LocalService` receives read access. Upgrades and uninstall preserve the configuration.
+Open `Logibooks.Alta.Adapter.Setup.exe` and choose the installation mode.
 
-Version 0.2.0 deliberately does not read or migrate `ConnectionStrings.AltaDatabase`. An existing 0.1.0 configuration is preserved by the MSI but must be manually replaced with the new `Databases` contract before enabling the service:
+- **Console app** installs for your Windows account without elevation. Use **Edit console configuration** in the Start menu to open `%LOCALAPPDATA%\Logibooks\Alta\appsettings.json`, then launch **Logibooks Alta Adapter (Console)**. The adapter logs to the console and runs until you close it.
+- **Windows service** requests administrator credentials, installs under `%ProgramFiles%\Logibooks\Alta`, and starts automatically under `LocalService`. Edit `%ProgramData%\Logibooks\Alta\appsettings.json` as an administrator. Administrators and SYSTEM receive full access, and `LocalService` receives read access. If an older MSI-based service is installed, uninstall it from **Installed apps** before choosing this mode.
+
+Both modes preserve their configuration during upgrades and uninstall. For unattended installation, use `/CURRENTUSER /VERYSILENT /NORESTART` for console mode or `/ALLUSERS /VERYSILENT /NORESTART` from an elevated prompt for service mode.
+
+An existing 0.1.0 configuration using `ConnectionStrings.AltaDatabase` must be updated to the `Databases` format before enabling probes.
 
 ```json
 {
@@ -76,7 +80,7 @@ Version 0.2.0 deliberately does not read or migrate `ConnectionStrings.AltaDatab
 
 Target names must be nonempty and unique among enabled targets. Enabled targets need valid SQL connection strings. `Databases.MaxConcurrentProbes` accepts 1–32 and defaults to 4. When `Service.Enabled` is true, at least one database target must be enabled. Core URL and credentials are required only when both `Service.Enabled` and `Core.Enabled` are true; Core defaults to enabled.
 
-Set `Service.Enabled` to true only after configuration is valid. Operational events appear in **Event Viewer → Windows Logs → Application** with source `Logibooks Alta Adapter`.
+Set `Service.Enabled` to true only after configuration is valid. In service mode, operational events appear in **Event Viewer → Windows Logs → Application** with source `Logibooks Alta Adapter`.
 
 The full configuration file can be overridden with `LOGIBOOKS_ALTA_CONFIG_PATH`. Without the override, the default is ProgramData on Windows and `/etc/logibooks/alta/appsettings.json` on Linux.
 
@@ -120,7 +124,7 @@ The reset helper rejects empty, root, repository, backup, and unexpected target 
 
 ## Service commands
 
-The Windows publish supports the MSI custom actions:
+The Windows publish supports these setup commands.
 
 ```powershell
 Logibooks.Alta.Adapter.exe /Version
@@ -139,8 +143,8 @@ Set the version for a release with one command:
 .\scripts\Set-Version.ps1 0.3.0
 ```
 
-`Directory.Build.props` supplies the version for local builds, Windows publishes, and the adapter in Docker. The command sets that version and synchronizes the Visual Studio installer project. When the MSI version changes, it regenerates `ProductCode` and `PackageCode` and preserves the stable `UpgradeCode`.
+`Directory.Build.props` supplies the version for local builds, Windows publishes, the Windows setup EXE, and the adapter in Docker.
 
 Compose ignores `ALTA_VERSION` entries in existing `.env` files. Use `docker compose run --rm --no-deps adapter --version` to read the version built into the development image.
 
-Release tags must match the project version (`vX.Y.Z`). Pull requests and `main` run Windows tests and MSI validation alongside Linux tests and development image builds. Version tags publish the MSI and its SHA-256 checksum.
+Release tags must match the project version (`vX.Y.Z`). Pull requests and `main` run Windows tests and build the setup EXE alongside Linux tests and development image builds. Version tags publish the setup EXE and its SHA-256 checksum.

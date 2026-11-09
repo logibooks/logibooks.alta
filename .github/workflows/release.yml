@@ -39,24 +39,16 @@ jobs:
           --configuration Release
           --no-restore
 
-      - name: Install Visual Studio Installer Projects 3.x
-        shell: pwsh
-        run: .\scripts\Install-VdprojExtension.ps1
-
-      - name: Build release MSI
+      - name: Build Windows setup EXE
         shell: pwsh
         run: .\scripts\Build-Installer.ps1 -Configuration Release
-
-      - name: Validate MSI database
-        shell: pwsh
-        run: .\scripts\Test-Installer.ps1
 
       - name: Create SHA-256 checksum
         shell: pwsh
         run: |
-          $msi = '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.msi'
-          $hash = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash *Logibooks.Alta.Adapter.Setup.msi" | Set-Content "$msi.sha256" -Encoding ascii
+          $setup = '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe'
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash *Logibooks.Alta.Adapter.Setup.exe" | Set-Content "$setup.sha256" -Encoding ascii
 
       - name: Publish GitHub release
         shell: pwsh
@@ -64,8 +56,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh release create '${{ github.ref_name }}'
-          '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.msi'
-          '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.msi.sha256'
+          '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe'
+          '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe.sha256'
           --verify-tag
           --generate-notes
           --title 'Logibooks Alta Adapter ${{ github.ref_name }}'

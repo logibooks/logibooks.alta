@@ -4,7 +4,6 @@
 
 using System.Diagnostics;
 using System.Reflection;
-using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 namespace Logibooks.Alta.Tests;
@@ -13,16 +12,11 @@ namespace Logibooks.Alta.Tests;
 public sealed class VersionConsistencyTests
 {
     [Test]
-    public void ProjectVersion_MatchesServiceAssemblyAndInstaller()
+    public void ProjectVersion_MatchesServiceAssembly()
     {
         var root = FindRepositoryRoot();
         var props = XDocument.Load(Path.Combine(root, "Directory.Build.props"));
         var projectVersion = props.Descendants("Version").Single().Value;
-        var installer = File.ReadAllText(Path.Combine(
-            root,
-            "Logibooks.Alta.Setup",
-            "Logibooks.Alta.Setup.vdproj"));
-        var installerVersion = Regex.Match(installer, "\"ProductVersion\" = \"8:([^\"]+)\"").Groups[1].Value;
         var serviceAssembly = typeof(VersionInfo).Assembly;
         var assemblyVersion = serviceAssembly.GetName().Version;
         var assemblyInformationalVersion = serviceAssembly
@@ -33,7 +27,6 @@ public sealed class VersionConsistencyTests
         Assert.Multiple(() =>
         {
             Assert.That(VersionInfo.AppVersion, Is.EqualTo(projectVersion));
-            Assert.That(installerVersion, Is.EqualTo(projectVersion));
             Assert.That(assemblyVersion?.ToString(), Is.EqualTo($"{projectVersion}.0"));
             Assert.That(assemblyInformationalVersion, Is.EqualTo(projectVersion));
             Assert.That(fileVersion, Is.EqualTo($"{projectVersion}.0"));
@@ -56,24 +49,22 @@ public sealed class VersionConsistencyTests
     }
 
     [Test]
-    public void Installer_UsesStableUpgradeIdentityAndPublishItems()
+    public void Installer_UsesStableIdentityAndOffersBothInstallModes()
     {
         var root = FindRepositoryRoot();
         var installer = File.ReadAllText(Path.Combine(
             root,
             "Logibooks.Alta.Setup",
-            "Logibooks.Alta.Setup.vdproj"));
+            "Logibooks.Alta.Setup.iss"));
 
         Assert.Multiple(() =>
         {
-            Assert.That(installer, Does.Contain("\"UpgradeCode\" = \"8:{36E2F8BB-D73C-47F2-A624-371518531952}\""));
-            Assert.That(installer, Does.Contain("\"OutputGroupCanonicalName\" = \"8:PublishItems\""));
-            Assert.That(installer, Does.Contain("\"PublishProfilePath\" = \"8:Properties\\\\PublishProfiles\\\\win-x64.pubxml\""));
-            Assert.That(installer, Does.Contain("\"Arguments\" = \"8:/Install\""));
-            Assert.That(installer, Does.Contain("\"Arguments\" = \"8:/Rollback\""));
-            Assert.That(installer, Does.Contain("\"Arguments\" = \"8:/Uninstall\""));
-            Assert.That(installer, Does.Contain("\"InstallAllUsers\" = \"11:TRUE\""));
-            Assert.That(installer, Does.Contain("\"TargetPlatform\" = \"3:1\""));
+            Assert.That(installer, Does.Contain("AppId=Logibooks.Alta.Adapter"));
+            Assert.That(installer, Does.Contain("AppVersion={#AppVersion}"));
+            Assert.That(installer, Does.Contain("PrivilegesRequired=lowest"));
+            Assert.That(installer, Does.Contain("PrivilegesRequiredOverridesAllowed=dialog"));
+            Assert.That(installer, Does.Contain("if (CurStep <> ssPostInstall) or not IsAdminInstallMode then"));
+            Assert.That(installer, Does.Contain("onlyifdoesntexist uninsneveruninstall"));
         });
     }
 
@@ -134,7 +125,7 @@ public sealed class VersionConsistencyTests
         var installer = File.ReadAllText(Path.Combine(
             root,
             "Logibooks.Alta.Setup",
-            "Logibooks.Alta.Setup.vdproj"));
+            "Logibooks.Alta.Setup.iss"));
         var assets = Path.Combine(root, "Logibooks.Alta.Service", "Assets");
 
         Assert.Multiple(() =>
@@ -148,8 +139,8 @@ public sealed class VersionConsistencyTests
             Assert.That(ServiceConstants.DisplayName, Is.EqualTo("Logibooks Alta Adapter"));
             Assert.That(File.Exists(Path.Combine(assets, "Logibooks.Alta.Adapter.ico")), Is.True);
             Assert.That(File.Exists(Path.Combine(assets, "Logibooks.Alta.Adapter.png")), Is.True);
-            Assert.That(installer, Does.Contain("\"ProductName\" = \"8:Logibooks Alta Adapter\""));
-            Assert.That(installer, Does.Contain("\"ARPPRODUCTICON\" = \"8:_ALTA_PRODUCT_ICON\""));
+            Assert.That(installer, Does.Contain("AppName=Logibooks Alta Adapter"));
+            Assert.That(installer, Does.Contain(@"SetupIconFile=..\Logibooks.Alta.Service\Assets\Logibooks.Alta.Adapter.ico"));
         });
     }
 
