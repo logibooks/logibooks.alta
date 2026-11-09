@@ -31,7 +31,7 @@ if (-not $CompilerPath) {
 $compiler = (Resolve-Path -LiteralPath $CompilerPath).Path
 
 if (-not $PublishDirectory) {
-    $PublishDirectory = Join-Path $repositoryRoot "Logibooks.Alta.Service\bin\$Configuration\net10.0\win-x64\publish"
+    $PublishDirectory = Join-Path $repositoryRoot "Logibooks.Alta.Service\bin\$Configuration\net10.0\win-x64\publish-single-file"
     $publishArguments = @(
         'publish', $serviceProject, '--configuration', $Configuration, '--runtime', 'win-x64',
         '--self-contained', 'true', '-p:PublishProfile=win-x64', '--output', $PublishDirectory
@@ -45,11 +45,21 @@ if (-not $PublishDirectory) {
     }
 }
 $PublishDirectory = (Resolve-Path -LiteralPath $PublishDirectory).Path
-$adapter = Join-Path $PublishDirectory 'Logibooks.Alta.Adapter.exe'
-$publishedVersion = & $adapter /Version
-if ($LASTEXITCODE -ne 0 -or $publishedVersion -ne $version -or
-    -not (Test-Path -LiteralPath (Join-Path $PublishDirectory 'coreclr.dll') -PathType Leaf)) {
-    throw "Expected a self-contained Windows publish of Alta $version."
+$payload = @(Get-ChildItem -LiteralPath $PublishDirectory -Force)
+if ($payload.Count -ne 1 -or $payload[0].PSIsContainer -or $payload[0].Name -cne 'Logibooks.Alta.Adapter.exe') {
+    throw "Expected only Logibooks.Alta.Adapter.exe in '$PublishDirectory'."
+}
+
+# Require the executable to run with runtime lookup directed at the standalone payload.
+$previousDotnetRoot = $env:DOTNET_ROOT_X64
+try {
+    $env:DOTNET_ROOT_X64 = $PublishDirectory
+    $publishedVersion = & $payload[0].FullName /Version
+    if ($LASTEXITCODE -ne 0 -or $publishedVersion -ne $version) {
+        throw "Expected a self-contained Windows publish of Alta $version."
+    }
+} finally {
+    $env:DOTNET_ROOT_X64 = $previousDotnetRoot
 }
 
 if (-not $OutputDirectory) {

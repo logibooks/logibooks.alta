@@ -34,6 +34,7 @@ Build the Windows setup EXE with Inno Setup 6.3 or later in the 6.x series. The 
 ```
 
 Setup is written to `Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe`.
+The `win-x64` profile publishes `Logibooks.Alta.Adapter.exe` under `bin\Release\net10.0\win-x64\publish-single-file` in the service project. The executable bundles the .NET runtime, native dependencies, and Russian satellite resources.
 
 ## Production installation and configuration
 
@@ -43,6 +44,8 @@ Open `Logibooks.Alta.Adapter.Setup.exe` and choose the installation mode.
 - **Windows service** requests administrator credentials, installs under `%ProgramFiles%\Logibooks\Alta`, and starts automatically under `LocalService`. Edit `%ProgramData%\Logibooks\Alta\appsettings.json` as an administrator. Administrators and SYSTEM receive full access, and `LocalService` receives read access. If an older MSI-based service is installed, uninstall it from **Installed apps** before choosing this mode.
 
 Both modes preserve their configuration during upgrades and uninstall. For unattended installation, use `/CURRENTUSER /VERYSILENT /NORESTART` for console mode or `/ALLUSERS /VERYSILENT /NORESTART` from an elevated prompt for service mode.
+
+Windows installations write rolling logs under `%ProgramData%\Logibooks\Alta\Logs` for the service and `%LOCALAPPDATA%\Logibooks\Alta\Logs` for the console app. Log files rotate daily or at 10 MiB, with up to 14 files retained. Use `Logging:LogLevel` to set severity and `Logging:File:Enabled` to toggle file logging. `Logging:File:Directory` accepts an absolute path or a path relative to `appsettings.json`. A custom service log directory must grant `LocalService` modify access. Restart the adapter after changing file logging settings. Linux container deployments use console logging by default.
 
 An existing 0.1.0 configuration using `ConnectionStrings.AltaDatabase` must be updated to the `Databases` format before enabling probes.
 
