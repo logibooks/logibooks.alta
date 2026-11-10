@@ -35,11 +35,10 @@ PrivilegesRequiredOverrideAllUsers=Install Windows &service (administrator requi
 PrivilegesRequiredOverrideAllUsersRecommended=Install Windows &service (administrator required)
 
 [Files]
-Source: "{#PublishDir}\*"; DestDir: "{app}"; Excludes: "appsettings*.json"; Flags: ignoreversion recursesubdirs
+Source: "{#PublishDir}\Logibooks.Alta.Adapter.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "Run-Alta.cmd"; DestDir: "{app}"; Flags: ignoreversion; Check: not IsAdminInstallMode
 ; Console configuration lives in the current user's profile and survives upgrades and uninstall.
-Source: "{#PublishDir}\appsettings.template.json"; DestDir: "{localappdata}\Logibooks\Alta"; DestName: "appsettings.json"; Flags: onlyifdoesntexist uninsneveruninstall; Check: not IsAdminInstallMode
-Source: "{#PublishDir}\appsettings.template.json"; DestDir: "{app}"; Flags: ignoreversion; Check: IsAdminInstallMode
+Source: "..\Logibooks.Alta.Service\appsettings.template.json"; DestDir: "{localappdata}\Logibooks\Alta"; DestName: "appsettings.json"; Flags: onlyifdoesntexist uninsneveruninstall; Check: not IsAdminInstallMode
 
 [Icons]
 Name: "{group}\Logibooks Alta Adapter (Console)"; Filename: "{app}\Run-Alta.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\Logibooks.Alta.Adapter.exe"; Check: not IsAdminInstallMode

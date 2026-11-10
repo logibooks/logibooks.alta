@@ -95,6 +95,9 @@ public sealed class VersionConsistencyTests
             Assert.That(testsProject.Descendants("TargetFramework").Single().Value, Is.EqualTo("net10.0"));
             Assert.That(publishProfile.Descendants("RuntimeIdentifier").Single().Value, Is.EqualTo("win-x64"));
             Assert.That(publishProfile.Descendants("SelfContained").Single().Value, Is.EqualTo("true"));
+            Assert.That(publishProfile.Descendants("PublishSingleFile").Single().Value, Is.EqualTo("true"));
+            Assert.That(publishProfile.Descendants("IncludeNativeLibrariesForSelfExtract").Single().Value, Is.EqualTo("true"));
+            Assert.That(publishProfile.Descendants("SatelliteResourceLanguages").Single().Value, Is.EqualTo("ru"));
         });
     }
 

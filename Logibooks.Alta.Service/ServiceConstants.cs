@@ -12,4 +12,5 @@ internal static class ServiceConstants
     public const string ConfigurationDirectoryName = @"Logibooks\Alta";
     public const string ConfigurationFileName = "appsettings.json";
     public const string ConfigurationTemplateFileName = "appsettings.template.json";
+    public const string LogDirectoryName = "Logs";
 }

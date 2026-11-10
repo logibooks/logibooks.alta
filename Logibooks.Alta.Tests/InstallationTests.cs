@@ -6,6 +6,7 @@ using Logibooks.Alta.Installation;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Runtime.Versioning;
+using System.Text.Json;
 
 namespace Logibooks.Alta.Tests;
 
@@ -184,18 +185,18 @@ public sealed class ConfigurationProvisionerTests
     [Test]
     public void EnsureConfiguration_CreatesFileAndAppliesAcl()
     {
-        var template = Path.Combine(_root, "template.json");
         var directory = Path.Combine(_root, "ProgramData");
         var configuration = Path.Combine(directory, "appsettings.json");
-        File.WriteAllText(template, "template-content");
         var acl = new RecordingAclProtector();
-        var provisioner = new ConfigurationProvisioner(template, directory, configuration, acl);
+        var provisioner = new ConfigurationProvisioner(configuration, acl);
 
         provisioner.EnsureConfiguration();
 
+        using var settings = JsonDocument.Parse(File.ReadAllText(configuration));
         Assert.Multiple(() =>
         {
-            Assert.That(File.ReadAllText(configuration), Is.EqualTo("template-content"));
+            Assert.That(settings.RootElement.GetProperty("Service").GetProperty("Enabled").GetBoolean(), Is.False);
+            Assert.That(settings.RootElement.GetProperty("Logging").GetProperty("File").GetProperty("Enabled").GetBoolean(), Is.True);
             Assert.That(acl.Paths, Is.EqualTo(new[] { (directory, configuration) }));
         });
     }
@@ -203,14 +204,12 @@ public sealed class ConfigurationProvisionerTests
     [Test]
     public void EnsureConfiguration_PreservesExistingFileDuringUpgrade()
     {
-        var template = Path.Combine(_root, "template.json");
         var directory = Path.Combine(_root, "ProgramData");
         var configuration = Path.Combine(directory, "appsettings.json");
         Directory.CreateDirectory(directory);
-        File.WriteAllText(template, "new-template");
         File.WriteAllText(configuration, "existing-settings");
         var acl = new RecordingAclProtector();
-        var provisioner = new ConfigurationProvisioner(template, directory, configuration, acl);
+        var provisioner = new ConfigurationProvisioner(configuration, acl);
 
         provisioner.EnsureConfiguration();
 

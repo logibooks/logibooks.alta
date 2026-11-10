@@ -96,6 +96,7 @@ jobs:
           $setup = '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe'
           $uninstaller = "$env:ProgramFiles\Logibooks\Alta\unins000.exe"
           $config = "$env:ProgramData\Logibooks\Alta\appsettings.json"
+          $logs = "$env:ProgramData\Logibooks\Alta\Logs\alta-*.log"
           $silent = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
           try {
             foreach ($attempt in 1..2) {
@@ -108,6 +109,11 @@ jobs:
                 $service.Dispose()
               }
               if ($attempt -eq 1) {
+                $deadline = [DateTime]::UtcNow.AddSeconds(15)
+                while (!(Get-Content -Path $logs -ErrorAction SilentlyContinue | Select-String -Pattern 'Logibooks Alta Adapter version .+ started' -Quiet)) {
+                  if ([DateTime]::UtcNow -ge $deadline) { throw 'The Windows service did not write its startup log.' }
+                  Start-Sleep -Seconds 1
+                }
                 Add-Content -LiteralPath $config -Value ' '
                 $configHash = (Get-FileHash -LiteralPath $config).Hash
               } elseif ((Get-FileHash -LiteralPath $config).Hash -ne $configHash) {

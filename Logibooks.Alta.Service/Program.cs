@@ -45,13 +45,15 @@ internal static class ProgramEntry
             ContentRootPath = AppContext.BaseDirectory
         });
 
+        var configurationPath = ConfigurationPaths.GetConfigurationPath();
         builder.Configuration.AddJsonFile(
-            ConfigurationPaths.GetConfigurationPath(),
+            configurationPath,
             optional: true,
             reloadOnChange: true);
         // The external operational file is added after the host defaults, so re-add
         // environment variables last to preserve standard container override behavior.
         builder.Configuration.AddEnvironmentVariables();
+        builder.Logging.AddRollingFile(builder.Configuration, Path.GetDirectoryName(configurationPath)!);
 
         if (OperatingSystem.IsWindows())
         {
@@ -103,15 +105,9 @@ internal static class ProgramEntry
 
             var executablePath = Environment.ProcessPath
                 ?? Path.Combine(AppContext.BaseDirectory, "Logibooks.Alta.Adapter.exe");
-            var configurationDirectory = ConfigurationPaths.GetDirectoryPath();
             var configurationPath = ConfigurationPaths.GetConfigurationPath();
-            var templatePath = Path.Combine(
-                AppContext.BaseDirectory,
-                ServiceConstants.ConfigurationTemplateFileName);
 
             var provisioner = new ConfigurationProvisioner(
-                templatePath,
-                configurationDirectory,
                 configurationPath,
                 new WindowsFileAclProtector());
             var installer = new WindowsServiceInstaller(

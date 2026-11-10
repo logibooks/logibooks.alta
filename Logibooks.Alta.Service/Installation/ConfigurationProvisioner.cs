@@ -25,9 +25,15 @@ internal sealed class WindowsFileAclProtector : IFileAclProtector
 
         new DirectoryInfo(directoryPath).SetAccessControl(CreateDirectorySecurity());
         new FileInfo(filePath).SetAccessControl(CreateFileSecurity());
+        var logDirectory = Directory.CreateDirectory(Path.Combine(directoryPath, ServiceConstants.LogDirectoryName));
+        logDirectory.SetAccessControl(CreateLogDirectorySecurity());
     }
 
-    internal static DirectorySecurity CreateDirectorySecurity()
+    internal static DirectorySecurity CreateDirectorySecurity() => CreateDirectorySecurity(FileSystemRights.ReadAndExecute);
+
+    internal static DirectorySecurity CreateLogDirectorySecurity() => CreateDirectorySecurity(FileSystemRights.Modify);
+
+    private static DirectorySecurity CreateDirectorySecurity(FileSystemRights localServiceRights)
     {
         var directorySecurity = new DirectorySecurity();
         directorySecurity.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
@@ -45,7 +51,7 @@ internal sealed class WindowsFileAclProtector : IFileAclProtector
             AccessControlType.Allow));
         directorySecurity.AddAccessRule(new FileSystemAccessRule(
             Sid(WellKnownSidType.LocalServiceSid),
-            FileSystemRights.ReadAndExecute,
+            localServiceRights,
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
             PropagationFlags.None,
             AccessControlType.Allow));
@@ -80,17 +86,21 @@ internal interface IConfigurationProvisioner
 }
 
 internal sealed class ConfigurationProvisioner(
-    string templatePath,
-    string configurationDirectory,
     string configurationPath,
     IFileAclProtector aclProtector) : IConfigurationProvisioner
 {
     public void EnsureConfiguration()
     {
+        var configurationDirectory = Path.GetDirectoryName(configurationPath)
+            ?? throw new InvalidOperationException("The configuration path has no parent directory.");
         Directory.CreateDirectory(configurationDirectory);
         if (!File.Exists(configurationPath))
         {
-            File.Copy(templatePath, configurationPath, overwrite: false);
+            using var template = typeof(ConfigurationProvisioner).Assembly.GetManifestResourceStream(
+                ServiceConstants.ConfigurationTemplateFileName)
+                ?? throw new InvalidOperationException("The embedded configuration template is missing.");
+            using var destination = new FileStream(configurationPath, FileMode.CreateNew, FileAccess.Write);
+            template.CopyTo(destination);
         }
 
         aclProtector.Protect(configurationDirectory, configurationPath);
