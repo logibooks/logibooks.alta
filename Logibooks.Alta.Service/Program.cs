@@ -8,6 +8,7 @@ using Logibooks.Alta.CoreApi;
 using Logibooks.Alta.Database;
 using Logibooks.Alta.Installation;
 using Logibooks.Alta.Monitoring;
+using Microsoft.Extensions.Hosting.WindowsServices;
 using Microsoft.Extensions.Logging.EventLog;
 
 return await ProgramEntry.RunAsync(args);
@@ -53,9 +54,13 @@ internal static class ProgramEntry
         // The external operational file is added after the host defaults, so re-add
         // environment variables last to preserve standard container override behavior.
         builder.Configuration.AddEnvironmentVariables();
-        builder.Logging.AddRollingFile(builder.Configuration, Path.GetDirectoryName(configurationPath)!);
+        builder.Logging
+            .ClearProviders()
+            .AddDebug()
+            .AddEventSourceLogger()
+            .AddRollingFile(builder.Configuration, Path.GetDirectoryName(configurationPath)!);
 
-        if (OperatingSystem.IsWindows())
+        if (OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService())
         {
             builder.Services.AddWindowsService(options => options.ServiceName = ServiceConstants.ServiceName);
             builder.Logging.AddEventLog(new EventLogSettings
@@ -63,6 +68,10 @@ internal static class ProgramEntry
                 LogName = "Application",
                 SourceName = ServiceConstants.DisplayName
             });
+        }
+        else
+        {
+            builder.Logging.AddConsole();
         }
 
         builder.Services
