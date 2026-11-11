@@ -15,8 +15,8 @@ public sealed class VersionConsistencyTests
     public void ProjectVersion_MatchesServiceAssembly()
     {
         var root = FindRepositoryRoot();
-        var serviceProject = XDocument.Load(Path.Combine(root, "Logibooks.Alta.Service", "Logibooks.Alta.Service.csproj"));
-        var projectVersion = serviceProject.Descendants("Version").Single().Value;
+        var props = XDocument.Load(Path.Combine(root, "Directory.Build.props"));
+        var projectVersion = props.Descendants("Version").Single().Value;
         var serviceAssembly = typeof(VersionInfo).Assembly;
         var assemblyVersion = serviceAssembly.GetName().Version;
         var assemblyInformationalVersion = serviceAssembly

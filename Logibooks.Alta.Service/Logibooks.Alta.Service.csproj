@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk.Worker">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Version>0.2.6</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <OutputType>Exe</OutputType>
     <RootNamespace>Logibooks.Alta</RootNamespace>
@@ -26,8 +25,6 @@
     <InternalsVisibleTo Include="Logibooks.Alta.Tests" />
     <Content Remove="appsettings.template.json" />
     <EmbeddedResource Include="appsettings.template.json" LogicalName="appsettings.template.json" />
-    <None Update="appsettings.Development.local.json"
-          CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="Never" />
+    <None Update="appsettings.Development.local.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Never" />
   </ItemGroup>
 </Project>
