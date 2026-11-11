@@ -109,7 +109,7 @@ public sealed class VersionConsistencyTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(program, Does.Contain("if (OperatingSystem.IsWindows())"));
+            Assert.That(program, Does.Contain("if (OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService())"));
             Assert.That(program, Does.Contain("AddWindowsService"));
             Assert.That(program, Does.Contain("AddEventLog"));
             Assert.That(program, Does.Contain("Service installation commands are supported only on Windows."));

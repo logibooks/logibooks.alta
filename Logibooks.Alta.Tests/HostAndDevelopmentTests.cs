@@ -15,7 +15,7 @@ namespace Logibooks.Alta.Tests;
 public sealed class HostConstructionTests
 {
     [Test]
-    public void BuildHost_UsesConsoleEverywhereAndEventLogOnlyOnWindows()
+    public void BuildHost_InForeground_UsesConsoleAndRollingFile()
     {
         var configurationDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -24,6 +24,7 @@ public sealed class HostConstructionTests
         var configurationPath = Path.Combine(configurationDirectory, "appsettings.json");
         File.WriteAllText(configurationPath, """
             {
+              "Logging": { "File": { "Enabled": true } },
               "Service": { "Enabled": false, "PollIntervalSeconds": 60 },
               "Databases": { "MaxConcurrentProbes": 4, "Targets": [] },
               "Core": { "Enabled": true, "RequestTimeoutSeconds": 30, "JwtRefreshSkewMinutes": 5 }
@@ -42,15 +43,12 @@ public sealed class HostConstructionTests
                 .Select(provider => provider.GetType().FullName ?? provider.GetType().Name)
                 .ToArray();
 
-            Assert.That(providers, Has.Some.Contains("ConsoleLoggerProvider"));
-            if (OperatingSystem.IsWindows())
+            Assert.Multiple(() =>
             {
-                Assert.That(providers, Has.Some.Contains("EventLogLoggerProvider"));
-            }
-            else
-            {
+                Assert.That(providers, Has.Some.Contains("ConsoleLoggerProvider"));
+                Assert.That(providers, Has.Some.Contains("SerilogLoggerProvider"));
                 Assert.That(providers, Has.None.Contains("EventLogLoggerProvider"));
-            }
+            });
         }
         finally
         {
