@@ -1,7 +1,5 @@
 <Project>
   <PropertyGroup>
-    <Version>0.2.3</Version>
-    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Company>logibooks</Company>
     <Product>Logibooks Alta Adapter</Product>
     <Copyright>Copyright (c) 2026 logibooks</Copyright>

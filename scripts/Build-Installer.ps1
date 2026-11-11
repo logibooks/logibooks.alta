@@ -13,9 +13,10 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $serviceProject = Join-Path $repositoryRoot 'Logibooks.Alta.Service\Logibooks.Alta.Service.csproj'
 $setupDirectory = Join-Path $repositoryRoot 'Logibooks.Alta.Setup'
 
-& (Join-Path $PSScriptRoot 'Test-Version.ps1')
-$props = [xml] [System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'Directory.Build.props'))
-$version = $props.Project.PropertyGroup.Version
+$version = & dotnet msbuild $serviceProject -nologo -getProperty:Version "-property:Configuration=$Configuration"
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not read the Logibooks Alta service project version.'
+}
 
 if (-not $CompilerPath) {
     $candidates = @(

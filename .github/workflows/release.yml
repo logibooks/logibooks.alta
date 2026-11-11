@@ -28,7 +28,13 @@ jobs:
 
       - name: Validate release tag
         shell: pwsh
-        run: .\scripts\Test-Version.ps1 -ExpectedTag '${{ github.ref_name }}'
+        run: |
+          $version = dotnet msbuild Logibooks.Alta.Service/Logibooks.Alta.Service.csproj -nologo -getProperty:Version
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read the Logibooks Alta service project version.' }
+          $expectedTag = 'v' + $version
+          if ($env:GITHUB_REF_NAME -cne $expectedTag) {
+            throw "Release tag '$env:GITHUB_REF_NAME' must match committed version '$expectedTag'."
+          }
 
       - name: Restore
         run: dotnet restore .\Logibooks.Alta.sln

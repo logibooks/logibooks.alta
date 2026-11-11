@@ -2,7 +2,7 @@
 
 <img src="Logibooks.Alta.Service/Assets/Logibooks.Alta.Adapter.png" alt="Logibooks Alta Adapter" width="160">
 
-Logibooks Alta Adapter monitors one or more Microsoft SQL Server databases and communicates with Logibooks Core over authenticated HTTPS. Version `0.2.0` adds independently configured database targets and a Linux container environment for development. It still performs connectivity probes only; business queries, payloads, ingestion, checkpoints, and idempotency are outside this version.
+Logibooks Alta Adapter monitors one or more independently configured Microsoft SQL Server databases and communicates with Logibooks Core over authenticated HTTPS. The adapter performs connectivity probes and can run in a Linux container for development.
 
 ## Runtime behavior
 
@@ -140,14 +140,8 @@ Install, rollback, and uninstall commands return a clear unsupported-platform er
 
 ## Versioning and releases
 
-Set the version for a release with one command:
+Update `<Version>` in `Logibooks.Alta.Service/Logibooks.Alta.Service.csproj` for each release. Local builds, Windows publishes, the Windows setup EXE, and the adapter in Docker all use this version.
 
-```powershell
-.\scripts\Set-Version.ps1 0.3.0
-```
-
-`Directory.Build.props` supplies the version for local builds, Windows publishes, the Windows setup EXE, and the adapter in Docker.
-
-Compose ignores `ALTA_VERSION` entries in existing `.env` files. Use `docker compose run --rm --no-deps adapter --version` to read the version built into the development image.
+Use `docker compose run --rm --no-deps adapter --version` to read the version built into the development image.
 
 Release tags must match the project version (`vX.Y.Z`). Pull requests and `main` run Windows tests and build the setup EXE alongside Linux tests and development image builds. Version tags publish the setup EXE and its SHA-256 checksum.
