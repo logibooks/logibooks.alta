@@ -38,20 +38,10 @@ jobs:
           --no-restore
           --collect:"XPlat Code Coverage"
 
-      - name: Validate restore script and Compose model
-        run: |
-          bash -n ./docker/mssql/restore-gtk.sh
-          docker compose --env-file .env.example config --quiet
-
-      - name: Build development images
-        run: |
-          docker compose --env-file .env.example build adapter adminer
-          expected=$(dotnet msbuild ./Logibooks.Alta.Service/Logibooks.Alta.Service.csproj -nologo -getProperty:Version)
-          actual=$(docker compose --env-file .env.example run --rm --no-deps -T adapter --version)
-          if [ "$actual" != "$expected" ]; then
-            echo "Expected adapter version '$expected', got '$actual'." >&2
-            exit 1
-          fi
+      - name: Validate Compose
+        env:
+          MSSQL_SA_PASSWORD: ComposeValidationOnly_Aa1!
+        run: docker compose --env-file .env.example config --quiet
 
   build-test-installer:
     runs-on: windows-latest

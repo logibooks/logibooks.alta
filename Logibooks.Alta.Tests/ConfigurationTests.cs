@@ -3,6 +3,7 @@
 // This file is a part of Logibooks Alta adapter
 
 using Logibooks.Alta.Configuration;
+using Logibooks.Alta.CoreApi;
 using Logibooks.Alta.Monitoring;
 
 namespace Logibooks.Alta.Tests;
@@ -42,20 +43,34 @@ public sealed class ConfigurationTests
         Assert.That(exception.Message, Does.Not.Contain("Password="));
     }
 
-    [TestCase("http://core.example")]
-    [TestCase("not-a-url")]
-    public void EnabledConfiguration_RequiresHttpsWhenCoreIsEnabled(string baseUrl)
+    [TestCase("http://core.example", false)]
+    [TestCase("http://localhost", false)]
+    [TestCase("http://localhost.example", true)]
+    [TestCase("not-a-url", false)]
+    public void EnabledConfiguration_RejectsUnsupportedCoreUrl(string baseUrl, bool isDevelopment)
     {
         var core = ValidCore();
         core.BaseUrl = baseUrl;
         var provider = CreateProvider(
             new ServiceOptions { Enabled = true },
             core,
-            ValidDatabases());
+            ValidDatabases(),
+            isDevelopment);
 
         var exception = Assert.Throws<RuntimeConfigurationException>(() => provider.GetValidated());
 
         Assert.That(exception!.Message, Does.Contain("absolute HTTPS URL"));
+    }
+
+    [Test]
+    public void DevelopmentConfiguration_AllowsHttpLocalhost()
+    {
+        var core = ValidCore();
+        core.BaseUrl = "http://localhost:5000";
+        var provider = CreateProvider(
+            new ServiceOptions { Enabled = true }, core, ValidDatabases(), isDevelopment: true);
+
+        Assert.That(provider.GetValidated().Core.BaseUrl, Is.EqualTo(core.BaseUrl));
     }
 
     [Test]
@@ -199,11 +214,13 @@ public sealed class ConfigurationTests
     private static RuntimeConfigurationProvider CreateProvider(
         ServiceOptions service,
         CoreOptions core,
-        DatabaseMonitoringOptions databases) =>
+        DatabaseMonitoringOptions databases,
+        bool isDevelopment = false) =>
         new(
             new TestOptionsMonitor<ServiceOptions>(service),
             new TestOptionsMonitor<CoreOptions>(core),
-            new TestOptionsMonitor<DatabaseMonitoringOptions>(databases));
+            new TestOptionsMonitor<DatabaseMonitoringOptions>(databases),
+            new CoreUris(isDevelopment));
 
     private static DatabaseMonitoringOptions ValidDatabases() => new()
     {

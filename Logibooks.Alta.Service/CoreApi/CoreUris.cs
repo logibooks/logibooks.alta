@@ -6,29 +6,38 @@ using Logibooks.Alta.Configuration;
 
 namespace Logibooks.Alta.CoreApi;
 
-internal static class CoreUris
+internal sealed class CoreUris(bool isDevelopment)
 {
-    public static Uri Login(CoreOptions options) => Combine(options, "api/Auth/login");
+    public string BaseUrlError => isDevelopment
+        ? "Core.BaseUrl must be an absolute HTTPS URL or an HTTP URL on localhost."
+        : "Core.BaseUrl must be an absolute HTTPS URL.";
 
-    public static Uri Check(CoreOptions options) => Combine(options, "api/Auth/check");
+    public Uri Login(CoreOptions options) => Combine(options, "api/Auth/login");
+    public Uri Check(CoreOptions options) => Combine(options, "api/Auth/check");
 
-    public static Uri GetValidatedBaseUri(CoreOptions options)
+    public Uri? GetAllowedBaseUri(string? baseUrl)
     {
-        if (!Uri.TryCreate(options.BaseUrl, UriKind.Absolute, out var uri) ||
-            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
         {
-            throw new CoreConfigurationException("Core.BaseUrl must be an absolute HTTPS URL.");
+            return null;
         }
 
+        return uri.Scheme == Uri.UriSchemeHttps ||
+               (isDevelopment && uri.Scheme == Uri.UriSchemeHttp &&
+                string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+            ? uri
+            : null;
+    }
+
+    private Uri Combine(CoreOptions options, string relativePath)
+    {
+        var uri = GetAllowedBaseUri(options.BaseUrl) ?? throw new CoreConfigurationException(BaseUrlError);
         var builder = new UriBuilder(uri);
         if (!builder.Path.EndsWith('/'))
         {
             builder.Path += "/";
         }
 
-        return builder.Uri;
+        return new Uri(builder.Uri, relativePath);
     }
-
-    private static Uri Combine(CoreOptions options, string relativePath) =>
-        new(GetValidatedBaseUri(options), relativePath);
 }

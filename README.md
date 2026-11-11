@@ -2,13 +2,13 @@
 
 <img src="Logibooks.Alta.Service/Assets/Logibooks.Alta.Adapter.png" alt="Logibooks Alta Adapter" width="160">
 
-Logibooks Alta Adapter monitors one or more independently configured Microsoft SQL Server databases and communicates with Logibooks Core over authenticated HTTPS. The adapter performs connectivity probes and can run in a Linux container for development.
+Logibooks Alta Adapter is a Windows application that monitors one or more Microsoft SQL Server databases and communicates with Logibooks Core over authenticated HTTPS.
 
 ## Runtime behavior
 
 - The self-contained x64 adapter runs as the `LogibooksAltaAdapter` Windows service under `LocalService` or as a console app under the current Windows account.
 - Production SQL Server instances and databases remain external and are not installed or managed by the adapter.
-- Development can run the adapter in Linux alongside SQL Server 2025 and MSSQL-enabled Adminer through Docker Compose.
+- In development, run the adapter on Windows with SQL Server 2025 and Adminer in Docker Desktop's Linux containers.
 - Each enabled target executes `SELECT CAST(1 AS int)`. Database probes run independently with bounded concurrency.
 - The optional Core probe runs concurrently with the database probes. It signs in through `POST /api/Auth/login`, requires the `adapter-alta` role, caches the JWT in memory, and calls `GET /api/Auth/check`.
 - Transient network and HTTP 5xx failures receive up to three attempts with 1- and 2-second delays. One fresh-login retry is made after HTTP `401`.
@@ -45,7 +45,7 @@ Open `Logibooks.Alta.Adapter.Setup.exe` and choose the installation mode.
 
 Both modes preserve their configuration during upgrades and uninstall. For unattended installation, use `/CURRENTUSER /VERYSILENT /NORESTART` for console mode or `/ALLUSERS /VERYSILENT /NORESTART` from an elevated prompt for service mode.
 
-Windows installations write rolling logs under `%ProgramData%\Logibooks\Alta\Logs` for the service and `%LOCALAPPDATA%\Logibooks\Alta\Logs` for the console app. Log files rotate daily or at 10 MiB, with up to 14 files retained. Use `Logging:LogLevel` to set severity and `Logging:File:Enabled` to toggle file logging. `Logging:File:Directory` accepts an absolute path or a path relative to `appsettings.json`. A custom service log directory must grant `LocalService` modify access. Restart the adapter after changing file logging settings. Linux container deployments use console logging by default.
+Windows installations write rolling logs under `%ProgramData%\Logibooks\Alta\Logs` for the service and `%LOCALAPPDATA%\Logibooks\Alta\Logs` for the console app. Log files rotate daily or at 10 MiB, with up to 14 files retained. Use `Logging:LogLevel` to set severity and `Logging:File:Enabled` to toggle file logging. `Logging:File:Directory` accepts an absolute path or a path relative to `appsettings.json`. A custom service log directory must grant `LocalService` modify access. Restart the adapter after changing file logging settings.
 
 An existing 0.1.0 configuration using `ConnectionStrings.AltaDatabase` must be updated to the `Databases` format before enabling probes.
 
@@ -89,41 +89,33 @@ The full configuration file can be overridden with `LOGIBOOKS_ALTA_CONFIG_PATH`.
 
 ## Development Compose environment
 
-The default development stack contains:
+SQL Server `2025-CU7-ubuntu-24.04` listens on `127.0.0.1:1433` and includes `sqlcmd`. It uses the restored `reestr_1_1.mdf` and `reestr_1_1_log.ldf` from `D:\Projects\logibooks\AltaDB\reestr_1_1`, mounted at `/database`. The external Docker volume `alta-reestr-1-1-sql-state` holds the SQL Server catalog that already references these files. Compose startup uses this existing database, and `docker compose down` preserves the files and catalog.
 
-- SQL Server `2025-CU7-ubuntu-24.04`, bound to `127.0.0.1:1433`.
-- An idempotent restore job for `D:\Projects\logibooks\AltaDB\gtk_2026-07-30.bak` only.
-- The Linux adapter monitoring `gtk` as `AltaInstance3`, with Core disabled.
-- Adminer 5.5.0 with its FreeTDS `pdo_dblib` MSSQL driver, at [http://localhost:8083](http://localhost:8083).
-
-The 142 GB `reestr_1_1.bak` backup is intentionally excluded from automatic startup. SQL system databases plus `gtk.mdf` and `gtk_log.ldf` persist under `D:\Projects\logibooks\AltaInstance3`.
-
-Start Docker Desktop, then run:
+Start Docker Desktop in Linux container mode. If `.env` is absent, copy `.env.example` to `.env`. Set `MSSQL_SA_PASSWORD` to the existing `sa` password for the state volume and `ALTA_DB_PASSWORD` to the password for the read-only `logibooks` login. Use single quotes around dotenv passwords containing `$`. Run the helper from the solution directory.
 
 ```powershell
 .\scripts\Start-Development.ps1
-docker compose logs --follow adapter
 ```
 
-The helper checks Docker, verifies the backup, creates the data directory, creates an ignored `.env` with policy-compliant generated passwords when absent, and starts the stack. Paths and loopback ports can be changed in `.env`; `.env.example` documents the contract. The adapter connects through the dedicated `alta_adapter` login, which has `CONNECT` and `db_datareader` only.
+The helper waits for the restored database to accept connections and configures the Windows adapter to connect to `reestr_1` as `logibooks`. A fresh development configuration uses `http://localhost` for Core and starts with the Core probe disabled. Run the helper again after changing the SQL port or the adapter's SQL password.
+
+Compose pulls the prebuilt `adminer:5.5.0-standalone` image with MS SQL support. Open [Adminer](http://127.0.0.1:8083), select **MS SQL**, and sign in with server `mssql`, user `sa`, the password from `.env`, and database `reestr_1`. For an interactive SQL session, run:
+
+```powershell
+docker compose exec mssql sqlcmd -S localhost -U sa -d reestr_1 -C
+```
 
 ### Visual Studio Docker Compose project
 
-The solution includes a `Microsoft.Docker.Sdk` Docker Compose project equivalent to the sibling Core solution. Visual Studio Container Tools are required. The project can be loaded before `.env` exists; run `Start-Development.ps1` before the first Compose launch to create the ignored `.env` and required host directory, then select one of these startup profiles in Visual Studio:
+The `docker-compose.dcproj` project is included in `Logibooks.Alta.sln` and uses Visual Studio Container Tools. Its **Docker Compose** profile starts SQL Server and Adminer. **Docker Compose (Adminer)** also opens Adminer in the browser.
 
-- **Docker Compose** starts the complete dependency-aware stack and attaches the debugger to `adapter`.
-- **Docker Compose (Adminer)** starts the complete stack without attaching a debugger and opens Adminer in the browser.
-
-The project uses regular container build mode because the adapter Dockerfile is also the reproducible CLI and CI development image. Visual Studio honors SQL health and restore completion through `DependencyAwareStart` before starting the adapter.
-
-Normal `docker compose down` / `up` preserves the database and skips restoration when `gtk` already exists. For one clean restore, use the guarded reset helper and type its exact confirmation phrase:
+After preparing the local configuration with the helper, start `Logibooks.Alta.Service` with the **Alta (Windows development)** profile to debug the Windows process. From PowerShell, use:
 
 ```powershell
-.\scripts\Reset-Development.ps1
-.\scripts\Start-Development.ps1
+dotnet run --project .\Logibooks.Alta.Service --launch-profile 'Alta (Windows development)'
 ```
 
-The reset helper rejects empty, root, repository, backup, and unexpected target paths and deletes only the resolved `AltaInstance3` directory contents.
+The profile sets `DOTNET_ENVIRONMENT=Development`. To probe a local Core server, enable `Core` in `Logibooks.Alta.Service/appsettings.Development.local.json` and set `Core.BaseUrl` to `http://localhost` with the port Core listens on. Staging and production require HTTPS.
 
 ## Service commands
 
@@ -140,8 +132,6 @@ Install, rollback, and uninstall commands return a clear unsupported-platform er
 
 ## Versioning and releases
 
-Update `<Version>` in `Logibooks.Alta.Service/Logibooks.Alta.Service.csproj` for each release. Local builds, Windows publishes, the Windows setup EXE, and the adapter in Docker all use this version.
+Update `<Version>` in `Logibooks.Alta.Service/Logibooks.Alta.Service.csproj` for each release. Local builds, Windows publishes, and the Windows setup EXE use this version.
 
-Use `docker compose run --rm --no-deps adapter --version` to read the version built into the development image.
-
-Release tags must match the project version (`vX.Y.Z`). Pull requests and `main` run Windows tests and build the setup EXE alongside Linux tests and development image builds. Version tags publish the setup EXE and its SHA-256 checksum.
+Release tags must match the project version (`vX.Y.Z`). Pull requests and `main` run the Windows and Linux test suites, build the setup EXE, and validate the development Compose stack. Version tags publish the setup EXE and its SHA-256 checksum.

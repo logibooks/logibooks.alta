@@ -11,16 +11,10 @@
     <ProjectGuid>2ec3db01-c8a6-4feb-b49f-92f54305ae5b</ProjectGuid>
   </PropertyGroup>
   <ItemGroup>
-    <None Include=".env" />
+    <None Include=".env" Condition="Exists('$(MSBuildProjectDirectory)\.env')" />
     <None Include="docker-compose.yml" />
     <None Include="launchSettings.json" />
-    <None Include=".dockerignore" />
     <None Include=".env.example" />
-    <None Include="docker\adapter\Dockerfile" />
-    <None Include="docker\adminer\Dockerfile" />
-    <None Include="docker\config\appsettings.json" />
-    <None Include="docker\mssql\restore-gtk.sh" />
     <None Include="scripts\Start-Development.ps1" />
-    <None Include="scripts\Reset-Development.ps1" />
   </ItemGroup>
 </Project>

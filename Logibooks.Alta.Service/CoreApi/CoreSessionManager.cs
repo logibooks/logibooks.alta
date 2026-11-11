@@ -25,6 +25,7 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
     private readonly IHttpRetryExecutor _retryExecutor;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CoreSessionManager> _logger;
+    private readonly CoreUris _coreUris;
     private readonly SemaphoreSlim _loginLock = new(1, 1);
     private readonly IDisposable? _optionsRegistration;
     private TokenState? _tokenState;
@@ -34,13 +35,15 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
         IHttpClientFactory httpClientFactory,
         IHttpRetryExecutor retryExecutor,
         TimeProvider timeProvider,
-        ILogger<CoreSessionManager> logger)
+        ILogger<CoreSessionManager> logger,
+        CoreUris coreUris)
     {
         _options = options;
         _httpClientFactory = httpClientFactory;
         _retryExecutor = retryExecutor;
         _timeProvider = timeProvider;
         _logger = logger;
+        _coreUris = coreUris;
         _optionsRegistration = options.OnChange((_, _) => Volatile.Write(ref _tokenState, null));
     }
 
@@ -100,7 +103,7 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
             throw new CoreConfigurationException("Core credentials are not configured.");
         }
 
-        var loginUri = CoreUris.Login(options);
+        var loginUri = _coreUris.Login(options);
         var timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds);
         var client = _httpClientFactory.CreateClient(HttpClientNames.Authentication);
 

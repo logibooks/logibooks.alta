@@ -5,9 +5,7 @@
       "commandVersion": "1.0",
       "composeLaunchAction": "None",
       "serviceActions": {
-        "adapter": "StartDebugging",
         "mssql": "StartWithoutDebugging",
-        "mssql-restore": "StartWithoutDebugging",
         "adminer": "StartWithoutDebugging"
       }
     },
@@ -18,9 +16,7 @@
       "composeLaunchServiceName": "adminer",
       "composeLaunchUrl": "{Scheme}://localhost:{ServicePort}",
       "serviceActions": {
-        "adapter": "StartWithoutDebugging",
         "mssql": "StartWithoutDebugging",
-        "mssql-restore": "StartWithoutDebugging",
         "adminer": "StartWithoutDebugging"
       }
     }

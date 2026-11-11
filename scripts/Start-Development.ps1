@@ -1,110 +1,95 @@
 [CmdletBinding()]
-param(
-    [string] $BackupDirectory = 'D:\Projects\logibooks\AltaDB',
-    [string] $DataDirectory = 'D:\Projects\logibooks\AltaInstance3',
-    [ValidateRange(1, 65535)] [int] $SqlPort = 1433,
-    [ValidateRange(1, 65535)] [int] $AdminerPort = 8083
-)
+param()
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$environmentPath = Join-Path $repositoryRoot '.env'
-
-function New-DevelopmentPassword {
-    $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@%+=_'
-    $characters = [System.Collections.Generic.List[char]]::new()
-    foreach ($character in 'Aa7!'.ToCharArray()) {
-        $characters.Add($character)
-    }
-    while ($characters.Count -lt 32) {
-        $characters.Add($alphabet[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($alphabet.Length)])
-    }
-    for ($index = $characters.Count - 1; $index -gt 0; $index--) {
-        $swapIndex = [System.Security.Cryptography.RandomNumberGenerator]::GetInt32($index + 1)
-        ($characters[$index], $characters[$swapIndex]) = ($characters[$swapIndex], $characters[$index])
-    }
-    -join $characters
-}
-
-function Convert-ToComposePath([string] $Path) {
-    [System.IO.Path]::GetFullPath($Path).Replace('\', '/')
-}
-
-function Read-EnvironmentValue([string] $Name, [string] $DefaultValue) {
-    $prefix = "$Name="
-    $line = Get-Content -LiteralPath $environmentPath |
-        Where-Object { $_.StartsWith($prefix, [System.StringComparison]::Ordinal) } |
-        Select-Object -Last 1
-    if (-not $line) {
-        return $DefaultValue
-    }
-
-    $line.Substring($prefix.Length).Trim().Trim('"')
-}
-
-$environmentExists = Test-Path -LiteralPath $environmentPath -PathType Leaf
-if ($environmentExists) {
-    $BackupDirectory = (Read-EnvironmentValue 'ALTA_BACKUP_DIR' $BackupDirectory).Replace('/', '\')
-    $DataDirectory = (Read-EnvironmentValue 'ALTA_INSTANCE3_DIR' $DataDirectory).Replace('/', '\')
-    $configuredSqlPort = Read-EnvironmentValue 'MSSQL_PORT' $SqlPort
-    $configuredAdminerPort = Read-EnvironmentValue 'ADMINER_PORT' $AdminerPort
-    if (-not [int]::TryParse($configuredSqlPort, [ref] $SqlPort) -or
-        $SqlPort -lt 1 -or $SqlPort -gt 65535) {
-        throw "MSSQL_PORT in '$environmentPath' must be between 1 and 65535."
-    }
-    if (-not [int]::TryParse($configuredAdminerPort, [ref] $AdminerPort) -or
-        $AdminerPort -lt 1 -or $AdminerPort -gt 65535) {
-        throw "ADMINER_PORT in '$environmentPath' must be between 1 and 65535."
-    }
-}
-
-$backupPath = Join-Path $BackupDirectory 'gtk_2026-07-30.bak'
+$configurationPath = Join-Path $repositoryRoot 'Logibooks.Alta.Service\appsettings.Development.local.json'
+$databaseName = 'reestr_1'
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw 'Docker CLI was not found. Install and start Docker Desktop before running this helper.'
 }
 
-& docker info --format '{{.ServerVersion}}' *> $null
-if ($LASTEXITCODE -ne 0) {
-    throw 'Docker Desktop is not running or its Linux container engine is unavailable.'
-}
-
-if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
-    throw "Required development backup was not found: $backupPath"
-}
-
-[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetFullPath($DataDirectory)) | Out-Null
-
-if (-not $environmentExists) {
-    $lines = @(
-        '# Copyright (C) 2026 Maxim [maxirmx] Samsonov (www.sw.consulting)',
-        '# All rights reserved.',
-        '# This file is a part of Logibooks Alta adapter',
-        '',
-        "MSSQL_SA_PASSWORD=$(New-DevelopmentPassword)",
-        "ALTA_DB_PASSWORD=$(New-DevelopmentPassword)",
-        "ALTA_BACKUP_DIR=$(Convert-ToComposePath $BackupDirectory)",
-        "ALTA_INSTANCE3_DIR=$(Convert-ToComposePath $DataDirectory)",
-        "MSSQL_PORT=$SqlPort",
-        "ADMINER_PORT=$AdminerPort"
-    )
-    [System.IO.File]::WriteAllLines($environmentPath, $lines, [System.Text.UTF8Encoding]::new($false))
-    Write-Host "Created ignored development settings at $environmentPath."
-}
-else {
-    Write-Host "Using existing development settings at $environmentPath."
+$engine = & docker info --format '{{.OSType}}'
+if ($LASTEXITCODE -ne 0 -or $engine -ne 'linux') {
+    throw 'Start Docker Desktop with the Linux container engine.'
 }
 
 Push-Location $repositoryRoot
 try {
-    & docker compose up --build --detach
+    $modelJson = & docker compose config --format json
     if ($LASTEXITCODE -ne 0) {
-        throw "docker compose up failed with exit code $LASTEXITCODE."
+        throw 'Set the existing SQL Server sa password in .env. See .env.example.'
     }
+
+    $passwordPrefix = 'ALTA_DB_PASSWORD='
+    $composeEnvironment = & docker compose config --environment
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not read the Compose environment.'
+    }
+    $passwordEntry = $composeEnvironment |
+        Where-Object { $_.StartsWith($passwordPrefix, [StringComparison]::Ordinal) } |
+        Select-Object -First 1
+    if (-not $passwordEntry -or $passwordEntry.Length -eq $passwordPrefix.Length) {
+        throw 'Set ALTA_DB_PASSWORD in .env to the read-only logibooks SQL login password.'
+    }
+
+    $model = $modelJson | Out-String | ConvertFrom-Json
+    $sql = $model.services.mssql
+    $databaseMount = $sql.volumes | Where-Object target -eq '/database'
+    foreach ($fileName in 'reestr_1_1.mdf', 'reestr_1_1_log.ldf') {
+        $filePath = Join-Path $databaseMount.source $fileName
+        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+            throw "Restored database file is missing: $filePath"
+        }
+    }
+
+    & docker compose up --detach --wait --wait-timeout 360
+    if ($LASTEXITCODE -ne 0) {
+        throw "Docker Compose did not become ready. Check docker compose logs mssql adminer."
+    }
+
+    $sqlPort = ($sql.ports | Where-Object target -eq 1433).published
+    $adminerPort = ($model.services.adminer.ports | Where-Object target -eq 8080).published
+    $connection = [System.Data.Common.DbConnectionStringBuilder]::new()
+    $connection['Server'] = "tcp:127.0.0.1,$sqlPort"
+    $connection['Database'] = $databaseName
+    $connection['User ID'] = 'logibooks'
+    $connection['Password'] = $passwordEntry.Substring($passwordPrefix.Length)
+    $connection['Encrypt'] = 'True'
+    $connection['TrustServerCertificate'] = 'True'
+
+    if (Test-Path -LiteralPath $configurationPath -PathType Leaf) {
+        $configuration = Get-Content -LiteralPath $configurationPath -Raw | ConvertFrom-Json
+    }
+    else {
+        $configuration = [pscustomobject]@{
+            Service = @{ Enabled = $true }
+        }
+    }
+
+    if ($null -eq $configuration.Databases) {
+        $configuration | Add-Member -NotePropertyName Databases -NotePropertyValue ([pscustomobject]@{ Targets = @() }) -Force
+    }
+    $targets = @($configuration.Databases.Targets | Where-Object { $null -ne $_ })
+    $target = $targets | Where-Object Name -eq $databaseName | Select-Object -First 1
+    if ($null -eq $target) {
+        $target = [pscustomobject]@{ Name = $databaseName; Enabled = $true }
+        $configuration.Databases | Add-Member -NotePropertyName Targets -NotePropertyValue ($targets + $target) -Force
+    }
+    $target | Add-Member -NotePropertyName ConnectionString -NotePropertyValue $connection.ConnectionString -Force
+
+    if ($null -eq $configuration.Core) {
+        $configuration | Add-Member -NotePropertyName Core -NotePropertyValue ([pscustomobject]@{ Enabled = $false }) -Force
+    }
+    if ([string]::IsNullOrWhiteSpace($configuration.Core.BaseUrl)) {
+        $configuration.Core | Add-Member -NotePropertyName BaseUrl -NotePropertyValue 'http://localhost' -Force
+    }
+    $configuration | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $configurationPath -Encoding utf8
 }
 finally {
     Pop-Location
 }
 
-Write-Host "Logibooks Alta development services started. Adminer: http://localhost:$AdminerPort"
-Write-Host 'Follow adapter logs with: docker compose logs --follow adapter'
+Write-Host "SQL Server and Adminer are ready. Adminer is available at http://127.0.0.1:$adminerPort."
+Write-Host 'Run Logibooks.Alta.Service with the Alta (Windows development) launch profile.'

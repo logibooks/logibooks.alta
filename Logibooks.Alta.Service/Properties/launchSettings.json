@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "Alta (Windows development)": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "LOGIBOOKS_ALTA_CONFIG_PATH": "appsettings.Development.local.json"
+      }
+    }
+  }
+}

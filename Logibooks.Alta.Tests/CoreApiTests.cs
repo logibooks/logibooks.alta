@@ -108,12 +108,15 @@ public sealed class CoreSessionManagerTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 11, 12, 0, 0, TimeSpan.Zero);
 
-    [Test]
-    public async Task GetTokenAsync_PostsExpectedCredentialsAndCachesToken()
+    [TestCase("https://core.example/root/", false)]
+    [TestCase("http://localhost:5000/root", true)]
+    public async Task GetTokenAsync_PostsExpectedCredentialsAndCachesToken(string baseUrl, bool isDevelopment)
     {
         var token = CreateToken(Now.AddHours(1));
         var handler = LoginHandler(_ => LoginResponse(token, "adapter-alta"));
-        using var session = CreateSession(handler, ValidOptions(), new MutableTimeProvider(Now));
+        var options = ValidOptions();
+        options.BaseUrl = baseUrl;
+        using var session = CreateSession(handler, options, new MutableTimeProvider(Now), isDevelopment);
 
         var first = await session.GetTokenAsync(CancellationToken.None);
         var second = await session.GetTokenAsync(CancellationToken.None);
@@ -125,7 +128,7 @@ public sealed class CoreSessionManagerTests
             Assert.That(second, Is.EqualTo(token));
             Assert.That(handler.Calls, Is.EqualTo(1));
             Assert.That(request.Method, Is.EqualTo(HttpMethod.Post));
-            Assert.That(request.Uri, Is.EqualTo(new Uri("https://core.example/root/api/Auth/login")));
+            Assert.That(request.Uri, Is.EqualTo(new Uri($"{baseUrl.TrimEnd('/')}/api/Auth/login")));
             Assert.That(request.Body, Does.Contain("\"email\":\"adapter-alta\""));
             Assert.That(request.Body, Does.Contain("\"password\":\"core-secret\""));
         });
@@ -179,11 +182,12 @@ public sealed class CoreSessionManagerTests
         Assert.That(handler.Calls, Is.EqualTo(1));
     }
 
-    [Test]
-    public void GetTokenAsync_RejectsNonHttpsBaseUrlBeforeSending()
+    [TestCase("http://core.example")]
+    [TestCase("http://localhost")]
+    public void GetTokenAsync_RejectsNonHttpsBaseUrlOutsideDevelopment(string baseUrl)
     {
         var options = ValidOptions();
-        options.BaseUrl = "http://core.example";
+        options.BaseUrl = baseUrl;
         var handler = LoginHandler(_ => LoginResponse(CreateToken(Now.AddHours(1)), "adapter-alta"));
         using var session = CreateSession(handler, options, new MutableTimeProvider(Now));
 
@@ -230,13 +234,15 @@ public sealed class CoreSessionManagerTests
     private static CoreSessionManager CreateSession(
         RecordingHttpHandler handler,
         CoreOptions options,
-        TimeProvider timeProvider) =>
-        CreateSession(handler, new TestOptionsMonitor<CoreOptions>(options), timeProvider);
+        TimeProvider timeProvider,
+        bool isDevelopment = false) =>
+        CreateSession(handler, new TestOptionsMonitor<CoreOptions>(options), timeProvider, isDevelopment);
 
     private static CoreSessionManager CreateSession(
         RecordingHttpHandler handler,
         TestOptionsMonitor<CoreOptions> options,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        bool isDevelopment = false)
     {
         var clients = new Dictionary<string, HttpClient>
         {
@@ -247,7 +253,8 @@ public sealed class CoreSessionManagerTests
             new TestHttpClientFactory(clients),
             new HttpRetryExecutor(new NoRetryDelay()),
             timeProvider,
-            new ListLogger<CoreSessionManager>());
+            new ListLogger<CoreSessionManager>(),
+            new CoreUris(isDevelopment));
     }
 
     private static RecordingHttpHandler LoginHandler(Func<int, HttpResponseMessage> response) =>
@@ -378,18 +385,19 @@ public sealed class JwtSessionHandlerTests
 [TestFixture]
 public sealed class CoreApiProbeTests
 {
-    [Test]
-    public async Task ProbeAsync_CallsConfiguredCheckEndpoint()
+    [TestCase("https://core.example/root/", false)]
+    [TestCase("http://localhost:5000/root", true)]
+    public async Task ProbeAsync_CallsConfiguredCheckEndpoint(string baseUrl, bool isDevelopment)
     {
         var handler = new RecordingHttpHandler((_, _, _) =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.NoContent)));
         using var client = new HttpClient(handler);
-        var probe = CreateProbe(handler, client);
+        var probe = CreateProbe(client, baseUrl, isDevelopment);
 
         await probe.ProbeAsync(CancellationToken.None);
 
         var request = handler.Requests.Single();
-        Assert.That(request.Uri, Is.EqualTo(new Uri("https://core.example/root/api/Auth/check")));
+        Assert.That(request.Uri, Is.EqualTo(new Uri($"{baseUrl.TrimEnd('/')}/api/Auth/check")));
     }
 
     [Test]
@@ -398,7 +406,7 @@ public sealed class CoreApiProbeTests
         var handler = new RecordingHttpHandler((_, _, _) =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)));
         using var client = new HttpClient(handler);
-        var probe = CreateProbe(handler, client);
+        var probe = CreateProbe(client, "https://core.example/root/", isDevelopment: false);
 
         Assert.That(
             async () => await probe.ProbeAsync(CancellationToken.None),
@@ -406,11 +414,11 @@ public sealed class CoreApiProbeTests
         Assert.That(handler.Calls, Is.EqualTo(1));
     }
 
-    private static CoreApiProbe CreateProbe(RecordingHttpHandler handler, HttpClient client)
+    private static CoreApiProbe CreateProbe(HttpClient client, string baseUrl, bool isDevelopment)
     {
         var options = new TestOptionsMonitor<CoreOptions>(new CoreOptions
         {
-            BaseUrl = "https://core.example/root/",
+            BaseUrl = baseUrl,
             Email = "adapter-alta",
             Password = "secret",
             RequestTimeoutSeconds = 30,
@@ -420,6 +428,7 @@ public sealed class CoreApiProbeTests
         return new CoreApiProbe(
             options,
             new TestHttpClientFactory(clients),
-            new HttpRetryExecutor(new NoRetryDelay()));
+            new HttpRetryExecutor(new NoRetryDelay()),
+            new CoreUris(isDevelopment));
     }
 }

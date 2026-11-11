@@ -16,12 +16,13 @@ internal interface ICoreApiProbe
 internal sealed class CoreApiProbe(
     IOptionsMonitor<CoreOptions> options,
     IHttpClientFactory httpClientFactory,
-    IHttpRetryExecutor retryExecutor) : ICoreApiProbe
+    IHttpRetryExecutor retryExecutor,
+    CoreUris coreUris) : ICoreApiProbe
 {
     public async Task ProbeAsync(CancellationToken cancellationToken)
     {
         var current = options.CurrentValue;
-        var checkUri = CoreUris.Check(current);
+        var checkUri = coreUris.Check(current);
         var client = httpClientFactory.CreateClient(HttpClientNames.Api);
 
         using var response = await retryExecutor.SendAsync(

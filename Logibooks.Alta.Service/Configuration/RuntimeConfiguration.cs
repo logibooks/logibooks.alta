@@ -4,6 +4,7 @@
 
 using Microsoft.Extensions.Options;
 using Microsoft.Data.SqlClient;
+using Logibooks.Alta.CoreApi;
 
 namespace Logibooks.Alta.Configuration;
 
@@ -23,7 +24,8 @@ internal interface IRuntimeConfigurationProvider
 internal sealed class RuntimeConfigurationProvider(
     IOptionsMonitor<ServiceOptions> serviceOptions,
     IOptionsMonitor<CoreOptions> coreOptions,
-    IOptionsMonitor<DatabaseMonitoringOptions> databaseOptions) : IRuntimeConfigurationProvider
+    IOptionsMonitor<DatabaseMonitoringOptions> databaseOptions,
+    CoreUris coreUris) : IRuntimeConfigurationProvider
 {
     public RuntimeConfiguration GetValidated()
     {
@@ -53,11 +55,9 @@ internal sealed class RuntimeConfigurationProvider(
 
             ValidateDatabases(enabledDatabases, errors);
 
-            if (core.Enabled &&
-                (!Uri.TryCreate(core.BaseUrl, UriKind.Absolute, out var baseUri) ||
-                 !string.Equals(baseUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+            if (core.Enabled && coreUris.GetAllowedBaseUri(core.BaseUrl) is null)
             {
-                errors.Add("Core.BaseUrl must be an absolute HTTPS URL when the service is enabled");
+                errors.Add(coreUris.BaseUrlError);
             }
 
             if (core.Enabled && string.IsNullOrWhiteSpace(core.Email))

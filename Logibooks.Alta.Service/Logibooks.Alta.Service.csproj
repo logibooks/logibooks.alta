@@ -9,8 +9,6 @@
     <ApplicationIcon>Assets\Logibooks.Alta.Adapter.ico</ApplicationIcon>
     <Platforms>AnyCPU;x64</Platforms>
     <RuntimeIdentifiers>win-x64;linux-x64</RuntimeIdentifiers>
-    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
-    <DockerComposeProjectPath>..\docker-compose.dcproj</DockerComposeProjectPath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,5 +26,8 @@
     <InternalsVisibleTo Include="Logibooks.Alta.Tests" />
     <Content Remove="appsettings.template.json" />
     <EmbeddedResource Include="appsettings.template.json" LogicalName="appsettings.template.json" />
+    <None Update="appsettings.Development.local.json"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="Never" />
   </ItemGroup>
 </Project>

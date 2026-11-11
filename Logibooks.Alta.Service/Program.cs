@@ -81,6 +81,7 @@ internal static class ProgramEntry
                 builder.Configuration.GetSection(DatabaseMonitoringOptions.SectionName));
 
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton(new CoreUris(builder.Environment.IsDevelopment()));
         builder.Services.AddSingleton<IRuntimeConfigurationProvider, RuntimeConfigurationProvider>();
         builder.Services.AddSingleton<IConfigurationReloadSignal, ConfigurationReloadSignal>();
         builder.Services.AddSingleton<IDatabaseConnectionFactory, SqlConnectionFactory>();
