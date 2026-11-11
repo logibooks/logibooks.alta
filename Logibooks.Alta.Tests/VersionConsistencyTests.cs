@@ -34,7 +34,7 @@ public sealed class VersionConsistencyTests
     }
 
     [Test]
-    public void ReleaseTag_WhenPresent_MatchesCheckedInVersion()
+    public void ReleaseTag_WhenPresent_MatchesServiceVersion()
     {
         var tag = Environment.GetEnvironmentVariable("GITHUB_REF_TYPE") == "tag"
             ? Environment.GetEnvironmentVariable("GITHUB_REF_NAME")
