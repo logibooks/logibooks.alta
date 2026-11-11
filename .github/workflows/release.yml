@@ -26,15 +26,9 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Validate release tag
+      - name: Set application version from release tag
         shell: pwsh
-        run: |
-          $version = dotnet msbuild Logibooks.Alta.Service/Logibooks.Alta.Service.csproj -nologo -getProperty:Version
-          if ($LASTEXITCODE -ne 0) { throw 'Could not read the Logibooks Alta service project version.' }
-          $expectedTag = 'v' + $version
-          if ($env:GITHUB_REF_NAME -cne $expectedTag) {
-            throw "Release tag '$env:GITHUB_REF_NAME' must match committed version '$expectedTag'."
-          }
+        run: .\scripts\Set-ReleaseVersion.ps1 -Tag $env:GITHUB_REF_NAME
 
       - name: Restore
         run: dotnet restore .\Logibooks.Alta.sln
@@ -56,14 +50,34 @@ jobs:
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash *Logibooks.Alta.Adapter.Setup.exe" | Set-Content "$setup.sha256" -Encoding ascii
 
+      - name: Check out default branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: release-default-branch
+
+      - name: Commit version to default branch
+        shell: pwsh
+        working-directory: release-default-branch
+        env:
+          RELEASE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          ..\scripts\Set-ReleaseVersion.ps1 -Tag $env:GITHUB_REF_NAME -OnlyIncrease
+          if (git status --porcelain -- Directory.Build.props) {
+            git add -- Directory.Build.props
+            git -c 'user.name=github-actions[bot]' -c 'user.email=41898282+github-actions[bot]@users.noreply.github.com' commit -m "chore: bump version to $($env:GITHUB_REF_NAME.Substring(1))"
+            git push origin "HEAD:refs/heads/$env:RELEASE_DEFAULT_BRANCH"
+          }
+
       - name: Publish GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release create '${{ github.ref_name }}'
+          gh release create "$env:GITHUB_REF_NAME"
           '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe'
           '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe.sha256'
           --verify-tag
           --generate-notes
-          --title 'Logibooks Alta Adapter ${{ github.ref_name }}'
+          --title "Logibooks Alta Adapter $env:GITHUB_REF_NAME"

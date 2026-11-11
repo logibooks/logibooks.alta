@@ -132,6 +132,8 @@ Install, rollback, and uninstall commands return a clear unsupported-platform er
 
 ## Versioning and releases
 
-Update `<Version>` in `Logibooks.Alta.Service/Logibooks.Alta.Service.csproj` for each release. Local builds, Windows publishes, and the Windows setup EXE use this version.
+Push a tag in the form `vX.Y.Z` to publish the Windows setup EXE and its SHA-256 checksum. The release workflow sets `<Version>` in its build checkout from the tag before running tests and building the adapter and installer.
 
-Release tags must match the project version (`vX.Y.Z`). Pull requests and `main` run the Windows and Linux test suites, build the setup EXE, and validate the development Compose stack. Version tags publish the setup EXE and its SHA-256 checksum.
+After the build succeeds, the workflow commits the new version to the default branch if the tag version is newer.
+
+Local builds and regular CI use the version checked in to `Directory.Build.props`. Pull requests and `main` run the Windows and Linux test suites, build the setup EXE, and validate the development Compose stack.
