@@ -1,6 +1,6 @@
 # Logibooks Alta Adapter
 
-<img src="Logibooks.Alta.Service/Assets/Logibooks.Alta.Adapter.png" alt="Logibooks Alta Adapter" width="160">
+<img src="Logibooks.Alta.Service/Assets/Logibooks.Alta.Adapter.png" alt="Logibooks Alta Adapter" width="30">
 
 Logibooks Alta Adapter is a Windows application that monitors one or more Microsoft SQL Server databases and communicates with Logibooks Core over authenticated HTTPS.
 
@@ -40,7 +40,7 @@ The `win-x64` profile publishes `Logibooks.Alta.Adapter.exe` under `bin\Release\
 
 Open `Logibooks.Alta.Adapter.Setup.exe` and choose the installation mode.
 
-- **Console app** installs for your Windows account without elevation. Use **Edit console configuration** in the Start menu to open `%LOCALAPPDATA%\Logibooks\Alta\appsettings.json`, then launch **Logibooks Alta Adapter (Console)**. The adapter logs to the console and runs until you close it.
+- **Console app** installs for your Windows account without elevation. In the Start menu's **Logibooks** folder, use **Open Alta adapter configuration** to open `%LOCALAPPDATA%\Logibooks\Alta\appsettings.json`, then select **Start Alta adapter in console mode**. The adapter logs to the console and runs until you close it.
 - **Windows service** requests administrator credentials, installs under `%ProgramFiles%\Logibooks\Alta`, and starts automatically under `LocalService`. Edit `%ProgramData%\Logibooks\Alta\appsettings.json` as an administrator. Administrators and SYSTEM receive full access, and `LocalService` receives read access. If an older MSI-based service is installed, uninstall it from **Installed apps** before choosing this mode.
 
 Both modes preserve their configuration during upgrades and uninstall. For unattended installation, use `/CURRENTUSER /VERYSILENT /NORESTART` for console mode or `/ALLUSERS /VERYSILENT /NORESTART` from an elevated prompt for service mode.

@@ -1,3 +1,8 @@
+#define EnglishStartShortcut "Start Alta adapter in console mode"
+#define EnglishConfigShortcut "Open Alta adapter configuration"
+#define RussianStartShortcut "Запустить адаптер Альта в консольном режиме"
+#define RussianConfigShortcut "Открыть конфигурацию адаптера Альта"
+
 [Setup]
 AppId=Logibooks.Alta.Adapter
 AppName=Logibooks Alta Adapter
@@ -6,9 +11,10 @@ VersionInfoVersion={#AppVersion}
 VersionInfoProductName=Logibooks Alta Adapter
 AppPublisher=Logibooks
 DefaultDirName={autopf}\Logibooks\Alta
-DefaultGroupName=Logibooks Alta Adapter
+DefaultGroupName=Logibooks
 DisableDirPage=yes
 DisableProgramGroupPage=yes
+UsePreviousGroup=no
 DisableReadyMemo=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
@@ -25,14 +31,31 @@ SolidCompression=yes
 ; The profile files and shortcuts are conditional on console mode.
 UsedUserAreasWarning=no
 
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
+
 [Messages]
-PrivilegesRequiredOverrideInstruction=Choose how to run Logibooks Alta Adapter
-PrivilegesRequiredOverrideText1=Choose a Windows service for this machine or a console app for your account.
-PrivilegesRequiredOverrideText2=Choose a console app for your account or a Windows service for this machine.
-PrivilegesRequiredOverrideCurrentUser=Install &console app for me only
-PrivilegesRequiredOverrideCurrentUserRecommended=Install &console app for me only (no administrator rights)
-PrivilegesRequiredOverrideAllUsers=Install Windows &service (administrator required)
-PrivilegesRequiredOverrideAllUsersRecommended=Install Windows &service (administrator required)
+english.PrivilegesRequiredOverrideInstruction=Choose how to run Logibooks Alta Adapter
+english.PrivilegesRequiredOverrideText1=Choose a Windows service for this machine or a console app for your account.
+english.PrivilegesRequiredOverrideText2=Choose a console app for your account or a Windows service for this machine.
+english.PrivilegesRequiredOverrideCurrentUser=Install &console app for me only
+english.PrivilegesRequiredOverrideCurrentUserRecommended=Install &console app for me only (no administrator rights)
+english.PrivilegesRequiredOverrideAllUsers=Install Windows &service (administrator required)
+english.PrivilegesRequiredOverrideAllUsersRecommended=Install Windows &service (administrator required)
+russian.PrivilegesRequiredOverrideInstruction=Выберите режим работы адаптера Альта
+russian.PrivilegesRequiredOverrideText1=Установите службу Windows для этого компьютера или консольное приложение для своей учётной записи.
+russian.PrivilegesRequiredOverrideText2=Установите консольное приложение для своей учётной записи или службу Windows для этого компьютера.
+russian.PrivilegesRequiredOverrideCurrentUser=Установить &консольное приложение только для меня
+russian.PrivilegesRequiredOverrideCurrentUserRecommended=Установить &консольное приложение только для меня (права администратора не требуются)
+russian.PrivilegesRequiredOverrideAllUsers=Установить &службу Windows (требуются права администратора)
+russian.PrivilegesRequiredOverrideAllUsersRecommended=Установить &службу Windows (требуются права администратора)
+
+[CustomMessages]
+english.StartAltaShortcut={#EnglishStartShortcut}
+english.OpenAltaConfigurationShortcut={#EnglishConfigShortcut}
+russian.StartAltaShortcut={#RussianStartShortcut}
+russian.OpenAltaConfigurationShortcut={#RussianConfigShortcut}
 
 [Files]
 Source: "{#PublishDir}\Logibooks.Alta.Adapter.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -41,8 +64,19 @@ Source: "Run-Alta.cmd"; DestDir: "{app}"; Flags: ignoreversion; Check: not IsAdm
 Source: "..\Logibooks.Alta.Service\appsettings.template.json"; DestDir: "{localappdata}\Logibooks\Alta"; DestName: "appsettings.json"; Flags: onlyifdoesntexist uninsneveruninstall; Check: not IsAdminInstallMode
 
 [Icons]
-Name: "{group}\Logibooks Alta Adapter (Console)"; Filename: "{app}\Run-Alta.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\Logibooks.Alta.Adapter.exe"; Check: not IsAdminInstallMode
-Name: "{group}\Edit console configuration"; Filename: "{sys}\notepad.exe"; Parameters: """{localappdata}\Logibooks\Alta\appsettings.json"""; Check: not IsAdminInstallMode
+Name: "{group}\{cm:StartAltaShortcut}"; Filename: "{app}\Run-Alta.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\Logibooks.Alta.Adapter.exe"; Check: not IsAdminInstallMode
+Name: "{group}\{cm:OpenAltaConfigurationShortcut}"; Filename: "{sys}\notepad.exe"; Parameters: """{localappdata}\Logibooks\Alta\appsettings.json"""; Check: not IsAdminInstallMode
+
+[InstallDelete]
+; Remove the shortcut names used by console installers through v0.2.8.
+Type: files; Name: "{userprograms}\Logibooks Alta Adapter\Logibooks Alta Adapter (Console).lnk"; Check: not IsAdminInstallMode
+Type: files; Name: "{userprograms}\Logibooks Alta Adapter\Edit console configuration.lnk"; Check: not IsAdminInstallMode
+Type: dirifempty; Name: "{userprograms}\Logibooks Alta Adapter"; Check: not IsAdminInstallMode
+; Remove shortcuts left by an installation in the other language.
+Type: files; Name: "{group}\{#EnglishStartShortcut}.lnk"; Languages: russian; Check: not IsAdminInstallMode
+Type: files; Name: "{group}\{#EnglishConfigShortcut}.lnk"; Languages: russian; Check: not IsAdminInstallMode
+Type: files; Name: "{group}\{#RussianStartShortcut}.lnk"; Languages: english; Check: not IsAdminInstallMode
+Type: files; Name: "{group}\{#RussianConfigShortcut}.lnk"; Languages: english; Check: not IsAdminInstallMode
 
 [Code]
 const
