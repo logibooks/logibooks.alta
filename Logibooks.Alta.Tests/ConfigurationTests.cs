@@ -21,7 +21,8 @@ public sealed class ConfigurationTests
         Assert.Multiple(() =>
         {
             Assert.That(result.Service.Enabled, Is.False);
-            Assert.That(result.Service.PollIntervalSeconds, Is.EqualTo(60));
+            Assert.That(result.Service.MonitoringCron, Is.EqualTo("0 0 8-20/2 * * ?"));
+            Assert.That(result.Service.MonitoringTimeZone, Is.EqualTo("Europe/Moscow"));
             Assert.That(result.MaxConcurrentDatabaseProbes, Is.EqualTo(4));
             Assert.That(result.Databases, Is.Empty);
         });
@@ -42,16 +43,56 @@ public sealed class ConfigurationTests
     public void EnabledConfiguration_ReportsAllRequiredFieldsWithoutValues()
     {
         var provider = CreateProvider(
-            new ServiceOptions { Enabled = true, PollIntervalSeconds = 0 },
+            new ServiceOptions { Enabled = true, MonitoringCron = "bad cron", MonitoringTimeZone = "Missing/Zone" },
             new CoreOptions { RequestTimeoutSeconds = 0, JwtRefreshSkewMinutes = -1 },
             new DatabaseMonitoringOptions { MaxConcurrentProbes = 0 });
 
         var exception = Assert.Throws<RuntimeConfigurationException>(() => provider.GetValidated());
 
-        Assert.That(exception!.Errors, Has.Count.EqualTo(8));
+        Assert.That(exception!.Errors, Has.Count.EqualTo(9));
+        Assert.That(exception.Message, Does.Contain("Service.MonitoringCron"));
+        Assert.That(exception.Message, Does.Contain("Service.MonitoringTimeZone"));
         Assert.That(exception.Message, Does.Contain("Databases.Targets"));
         Assert.That(exception.Message, Does.Contain("Core.BaseUrl"));
         Assert.That(exception.Message, Does.Not.Contain("Password="));
+    }
+
+    [Test]
+    public void ExpiredCronDoesNotReachTheScheduler()
+    {
+        using var provider = new RuntimeConfigurationProvider(
+            new TestOptionsMonitor<ServiceOptions>(new() { Enabled = true, MonitoringCron = "0 0 8 1 1 ? 2000" }),
+            new TestOptionsMonitor<CoreOptions>(ValidCore()),
+            new TestOptionsMonitor<DatabaseMonitoringOptions>(ValidDatabases()), new CoreUris(false));
+
+        Assert.That(() => provider.GetValidated(),
+            Throws.TypeOf<RuntimeConfigurationException>().With.Message.Contains("future firing"));
+    }
+
+    [Test]
+    public void ScopeChangesEvenIfConfigurationReturnsToItsPreviousValuesBetweenPolls()
+    {
+        var service = new TestOptionsMonitor<ServiceOptions>(new() { Enabled = true });
+        var targets = new TestOptionsMonitor<DatabaseMonitoringOptions>(new()
+        {
+            Targets = [Target("first", "Server=db1"), Target("second", "Server=db2")]
+        });
+        using var provider = new RuntimeConfigurationProvider(service, new TestOptionsMonitor<CoreOptions>(ValidCore()),
+            targets, new CoreUris(false));
+        var initial = provider.GetValidated();
+
+        service.Set(new() { Enabled = true, MonitoringCron = "0 0 12 * * ?" });
+        Assert.That(provider.GetValidated().ScopeFor("first"), Is.EqualTo(initial.ScopeFor("first")));
+
+        targets.Set(new() { Targets = [Target("first", "Server=new"), Target("second", "Server=db2")] });
+        targets.Set(new() { Targets = [Target("first", "Server=db1"), Target("second", "Server=db2")] });
+        var replaced = provider.GetValidated();
+        Assert.That(replaced.ScopeFor("first"), Is.Not.EqualTo(initial.ScopeFor("first")));
+        Assert.That(replaced.ScopeFor("second"), Is.EqualTo(initial.ScopeFor("second")));
+
+        service.Set(new() { Enabled = false });
+        service.Set(new() { Enabled = true });
+        Assert.That(provider.GetValidated().ScopeFor("second"), Is.Not.EqualTo(initial.ScopeFor("second")));
     }
 
     [TestCase("http://core.example", false)]
@@ -175,19 +216,21 @@ public sealed class ConfigurationTests
     [Test]
     public void ValidConfiguration_IsClonedBeforeItIsReturned()
     {
-        var service = new ServiceOptions { Enabled = true, PollIntervalSeconds = 15 };
+        var service = new ServiceOptions { Enabled = true, MonitoringCron = "0 0 12 * * ?" };
         var core = ValidCore();
         var databases = ValidDatabases();
         var provider = CreateProvider(service, core, databases);
 
         var result = provider.GetValidated();
         service.Enabled = false;
+        service.MonitoringCron = "changed";
         core.Password = "changed";
         databases.Targets[0].ConnectionString = "changed";
 
         Assert.Multiple(() =>
         {
             Assert.That(result.Service.Enabled, Is.True);
+            Assert.That(result.Service.MonitoringCron, Is.EqualTo("0 0 12 * * ?"));
             Assert.That(result.Core.Password, Is.EqualTo("core-secret"));
             Assert.That(result.Databases[0].Name, Is.EqualTo("Primary"));
             Assert.That(result.Databases[0].ConnectionString, Does.Contain("Password=sql-secret"));

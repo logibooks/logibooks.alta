@@ -8,7 +8,6 @@ using Logibooks.Alta.Configuration;
 using Logibooks.Alta.CoreApi;
 using Logibooks.Alta.Database;
 using Logibooks.Alta.Monitoring;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace Logibooks.Alta.Tests;
@@ -160,10 +159,9 @@ public sealed class ProbeWorkerTests
     }
 
     [Test]
-    public async Task ReloadDuringActiveProbe_IsRetainedForTheNextCycle()
+    public async Task ReloadDuringStartup_AppliesTheNewSchedule()
     {
-        var configurationRoot = new ConfigurationBuilder().AddInMemoryCollection().Build();
-        using var signal = new ConfigurationReloadSignal(configurationRoot);
+        using var signal = ConfigurationReloadSignalTests.CreateSignal(out var reload);
         var firstProbeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirstProbe = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondProbeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -189,9 +187,10 @@ public sealed class ProbeWorkerTests
 
         await worker.StartAsync(CancellationToken.None);
         await firstProbeStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        configurationRoot.Reload();
+        configuration.Service.MonitoringCron = "0/1 * * * * ?";
+        reload();
         releaseFirstProbe.TrySetResult();
-        await secondProbeStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await secondProbeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await worker.StopAsync(CancellationToken.None);
 
         Assert.That(databaseProbe.Calls, Is.GreaterThanOrEqualTo(2));
@@ -200,8 +199,7 @@ public sealed class ProbeWorkerTests
     [Test]
     public async Task ReloadSwitchesModesOnlyAfterThePreviousModeHasFinished()
     {
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection().Build();
-        using var signal = new ConfigurationReloadSignal(configuration);
+        using var signal = ConfigurationReloadSignalTests.CreateSignal(out var reload);
         var disabled = ValidConfiguration(enabled: false);
         var enabled = ValidConfiguration(enabled: true);
         enabled.Core.Enabled = false;
@@ -222,13 +220,13 @@ public sealed class ProbeWorkerTests
         try
         {
             await console.Entered.Task.WaitAsync(deadline);
-            configuration.Reload();
+            reload();
             await console.Cancelled.Task.WaitAsync(deadline);
             Assert.That(probeStarted.Task.IsCompleted, Is.False);
             console.FinishSubmission.TrySetResult();
             await probeStarted.Task.WaitAsync(deadline);
 
-            configuration.Reload();
+            reload();
             Assert.That(console.Reopened.Task.IsCompleted, Is.False);
             releaseProbe.TrySetResult();
             await console.Reopened.Task.WaitAsync(deadline);
@@ -275,7 +273,7 @@ public sealed class ProbeWorkerTests
         bool enabled,
         int databaseCount = 1,
         int concurrency = 4) => new(
-        new ServiceOptions { Enabled = enabled, PollIntervalSeconds = 60 },
+        new ServiceOptions { Enabled = enabled },
         new CoreOptions
         {
             Enabled = true,
@@ -408,16 +406,21 @@ public sealed class ProbeWorkerTests
 [TestFixture]
 public sealed class ConfigurationReloadSignalTests
 {
-    [Test]
-    public async Task WaitAsync_WakesWhenConfigurationReloads()
+    internal static ConfigurationReloadSignal CreateSignal(out Action reload)
     {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection()
-            .Build();
-        using var signal = new ConfigurationReloadSignal(configuration);
+        var options = new TestOptionsMonitor<ServiceOptions>(new());
+        reload = () => options.Set(new());
+        return new ConfigurationReloadSignal(options, new TestOptionsMonitor<CoreOptions>(new()),
+            new TestOptionsMonitor<DatabaseMonitoringOptions>(new()));
+    }
+
+    [Test]
+    public async Task WaitAsync_WakesWhenNewOptionsArePublished()
+    {
+        using var signal = CreateSignal(out var reload);
 
         var wait = signal.WaitAsync(Timeout.InfiniteTimeSpan, CancellationToken.None);
-        configuration.Reload();
+        reload();
 
         await wait.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.That(wait.IsCompletedSuccessfully, Is.True);
@@ -426,10 +429,9 @@ public sealed class ConfigurationReloadSignalTests
     [Test]
     public async Task ReloadBeforeWait_RemainsPendingUntilConsumed()
     {
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection().Build();
-        using var signal = new ConfigurationReloadSignal(configuration);
+        using var signal = CreateSignal(out var reload);
 
-        configuration.Reload();
+        reload();
         await signal.WaitAsync(TimeSpan.FromMinutes(1), CancellationToken.None)
             .WaitAsync(TimeSpan.FromSeconds(2));
     }

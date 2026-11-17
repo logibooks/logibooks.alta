@@ -46,14 +46,14 @@ public sealed class AltaIntegrationTests
     }
 
     [Test]
-    public async Task BatchSubmitsOneDecWithExplicitNullableUinAndReturnsMixedItemResults()
+    public async Task BatchSubmitsOneDecisionPerNumberWithGoodsArraysAndReturnsMixedResults()
     {
         using var handler = new RecordingHttpHandler((_, _, _) => Task.FromResult(Reply("""
             {"cmrNumber":"CMR-1","decCode":"DEC-1","acceptedCount":2,
              "results":[{"index":0,"outcome":"applied"},{"index":1,"outcome":"error","code":"ErrorParcelNotFound","message":"Не найдено"}]}
             """)));
         var client = CreateClient(handler);
-        var batch = Batch() with { Assignments = [Item(), Item() with { Uin = "00012", Occurrence = 2 }] };
+        var batch = Batch() with { Assignments = [Item(), Item() with { ParcelNumber = "00043" }] };
         var result = await client.SubmitAsync(client.CaptureConfiguration(), "Alta", batch, CancellationToken.None);
         var request = handler.Requests.Single();
         using var json = JsonDocument.Parse(request.Body!);
@@ -63,9 +63,18 @@ public sealed class AltaIntegrationTests
             Assert.That(request.Method, Is.EqualTo(HttpMethod.Post));
             Assert.That(request.Uri!.AbsolutePath, Is.EqualTo("/root/api/alta/v1/databases/Alta/parcel-change-batches"));
             Assert.That(body.GetProperty("decCode").GetString(), Is.EqualTo("DEC-1"));
-            Assert.That(body.GetProperty("assignments")[0].GetProperty("uin").ValueKind, Is.EqualTo(JsonValueKind.Null));
-            Assert.That(body.GetProperty("assignments")[0].GetProperty("parcelNumber").GetString(), Is.EqualTo("00042"));
-            Assert.That(body.GetProperty("assignments")[1].GetProperty("uin").GetString(), Is.EqualTo("00012"));
+            var assignment = body.GetProperty("assignments")[0];
+            var goods = assignment.GetProperty("items");
+            Assert.That(assignment.GetProperty("parcelNumber").GetString(), Is.EqualTo("00042"));
+            Assert.That(assignment.TryGetProperty("uin", out _), Is.False);
+            Assert.That(assignment.TryGetProperty("occurrence", out _), Is.False);
+            Assert.That(assignment.TryGetProperty("tnVed", out _), Is.False);
+            Assert.That(goods.GetArrayLength(), Is.EqualTo(2));
+            Assert.That(goods[0].GetProperty("description").GetString(), Is.EqualTo("УИН:00012; Товар"));
+            Assert.That(goods[0].GetProperty("quantity").GetDecimal(), Is.EqualTo(3));
+            Assert.That(goods[0].GetProperty("totalCost").GetDecimal(), Is.EqualTo(10.00m));
+            Assert.That(goods[1].GetProperty("tnVed").ValueKind, Is.EqualTo(JsonValueKind.Null));
+            Assert.That(body.GetProperty("assignments")[1].GetProperty("parcelNumber").GetString(), Is.EqualTo("00043"));
             Assert.That(body.TryGetProperty("sequence", out _), Is.False);
             Assert.That(result.AcceptedCount, Is.EqualTo(2));
             Assert.That(result.Results[1], Is.EqualTo(new AltaItemResult(1, "error", "ErrorParcelNotFound", "Не найдено")));
@@ -148,13 +157,14 @@ public sealed class AltaIntegrationTests
 
     [TestCase("n", false)]
     [TestCase("y", true)]
-    public async Task ConsolePreviewsAndRequiresConfirmationForSingleItem(string confirmation, bool sendsUpdate)
+    public async Task ConsolePreviewsAllGoodsAndRequiresConfirmationForOneDecision(string confirmation, bool sendsUpdate)
     {
         using var handler = new RecordingHttpHandler((request, _, _) => Task.FromResult(request.Method == HttpMethod.Get
             ? Reply("""{"cmrs":["CMR-1"]}""")
             : Reply("""{"cmrNumber":"CMR-1","decCode":"DEC-1","acceptedCount":1,"results":[{"index":0,"outcome":"applied"}]}""")));
-        var terminal = new ScriptedTerminal("submit", "Alta", "CMR-1", "DEC-1", "00042", "", "", "10", "40", "",
-            "dutiesAndTaxes", "125.50", "rub", "", "6105100000", "0.265", confirmation, "status", "exit");
+        var terminal = new ScriptedTerminal("submit", "Alta", "CMR-1", "DEC-1", "00042", "10", "40", "",
+            "dutiesAndTaxes", "125.50", "rub", "", "0.265",
+            "First item", "6105100000", "003.00", "10.00", "Second item", "", "1", ".05", "", confirmation, "status", "exit");
         using var lifetime = new TestLifetime();
         var console = new AltaConsole(terminal, CreateClient(handler), new UnusedProbe(),
             new TestOptionsMonitor<DatabaseMonitoringOptions>(new() { Targets = [new() { Name = "Alta" }] }),
@@ -163,21 +173,45 @@ public sealed class AltaIntegrationTests
         await console.RunAsync(CancellationToken.None, lifetime.ApplicationStopping);
 
         Assert.That(lifetime.ApplicationStopping.IsCancellationRequested, Is.True);
-        Assert.That(terminal.Output, Has.Some.Contains("\"uin\": null"));
+        Assert.That(terminal.Output, Has.Some.Contains("\"tnVed\": null"));
+        Assert.That(terminal.Output, Has.Some.Contains("\"description\": \"Second item\""));
         Assert.That(handler.Requests.Count(request => request.Method == HttpMethod.Post), Is.EqualTo(sendsUpdate ? 1 : 0));
         Assert.That(handler.Requests.Count(request => request.Method == HttpMethod.Get), Is.EqualTo(sendsUpdate ? 2 : 1));
         if (sendsUpdate)
         {
             using var document = JsonDocument.Parse(handler.Requests.Last().Body!);
             var item = document.RootElement.GetProperty("assignments").EnumerateArray().Single();
-            Assert.That(item.GetProperty("occurrence").GetInt32(), Is.EqualTo(1));
+            Assert.That(item.TryGetProperty("occurrence", out _), Is.False);
+            Assert.That(item.GetProperty("items").GetArrayLength(), Is.EqualTo(2));
+            Assert.That(item.GetProperty("items")[0].GetProperty("totalCost").GetDecimal(), Is.EqualTo(10.00m));
+            Assert.That(item.GetProperty("items")[0].GetProperty("quantity").GetDecimal(), Is.EqualTo(3m));
+            Assert.That(item.GetProperty("items")[1].GetProperty("totalCost").GetDecimal(), Is.EqualTo(0.05m));
             Assert.That(item.GetProperty("payments")[0].GetProperty("currency").GetString(), Is.EqualTo("RUB"));
             Assert.That(terminal.Output, Has.Some.Contains("applied (saved decisions: 1)"));
         }
     }
 
+    [TestCase("1.5")]
+    [TestCase("0.00")]
+    public async Task ConsoleRejectsQuantitiesThatAreNotPositiveWholeNumbers(string quantity)
+    {
+        using var handler = new RecordingHttpHandler((_, _, _) => Task.FromResult(Reply("""{"cmrs":["CMR-1"]}""")));
+        var terminal = new ScriptedTerminal("submit", "Alta", "CMR-1", "DEC-1", "00042", "10", "40", "", "", "",
+            "Товар", "", quantity, "exit");
+        using var lifetime = new TestLifetime();
+        var console = new AltaConsole(terminal, CreateClient(handler), new UnusedProbe(),
+            new TestOptionsMonitor<DatabaseMonitoringOptions>(new() { Targets = [new() { Name = "Alta" }] }),
+            new TestOptionsMonitor<ServiceOptions>(new()), lifetime);
+
+        await console.RunAsync(CancellationToken.None, lifetime.ApplicationStopping);
+
+        Assert.That(terminal.Output, Has.Some.Contains("Quantity must be a positive whole number."));
+        Assert.That(handler.Requests.Select(request => request.Method), Is.EqualTo(new[] { HttpMethod.Get }));
+    }
+
     private static AltaBatch Batch() => new("CMR-1", "DEC-1", [Item()]);
-    private static AltaAssignment Item() => new("00042", null, 1, new(10, "40"), []);
+    private static AltaAssignment Item() => new("00042",
+        [new("УИН:00012; Товар", "6105100000", 3, 10.00m), new("Другой товар", null, 1, 0)], new(10, "40"), []);
 
     private static CoreOptions TestCoreOptions() => new() { BaseUrl = "https://core.example/root", Email = "alta@test", Password = "secret" };
 

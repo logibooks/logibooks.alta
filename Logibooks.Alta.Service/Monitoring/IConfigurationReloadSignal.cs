@@ -2,7 +2,8 @@
 // All rights reserved.
 // This file is a part of Logibooks Alta adapter
 
-using Microsoft.Extensions.Primitives;
+using Logibooks.Alta.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace Logibooks.Alta.Monitoring;
 
@@ -14,11 +15,18 @@ internal interface IConfigurationReloadSignal
 internal sealed class ConfigurationReloadSignal : IConfigurationReloadSignal, IDisposable
 {
     private readonly SemaphoreSlim _signal = new(0, 1);
-    private readonly IDisposable _registration;
+    private readonly IDisposable?[] _registrations;
 
-    public ConfigurationReloadSignal(IConfiguration configuration)
+    public ConfigurationReloadSignal(IOptionsMonitor<ServiceOptions> service,
+        IOptionsMonitor<CoreOptions> core, IOptionsMonitor<DatabaseMonitoringOptions> databases)
     {
-        _registration = ChangeToken.OnChange(configuration.GetReloadToken, Pulse);
+        // Use option publication callbacks so the worker can see the newly bound values when it wakes.
+        _registrations =
+        [
+            service.OnChange((_, _) => Pulse()),
+            core.OnChange((_, _) => Pulse()),
+            databases.OnChange((_, _) => Pulse())
+        ];
     }
 
     public async Task WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
@@ -34,7 +42,8 @@ internal sealed class ConfigurationReloadSignal : IConfigurationReloadSignal, ID
 
     public void Dispose()
     {
-        _registration.Dispose();
+        foreach (var registration in _registrations)
+            registration?.Dispose();
         _signal.Dispose();
     }
 
@@ -44,7 +53,7 @@ internal sealed class ConfigurationReloadSignal : IConfigurationReloadSignal, ID
         {
             _signal.Release();
         }
-        catch (SemaphoreFullException)
+        catch (Exception exception) when (exception is SemaphoreFullException or ObjectDisposedException)
         {
             // Multiple configuration updates collapse into one wake-up.
         }

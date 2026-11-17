@@ -98,6 +98,8 @@ internal static class ProgramEntry
         builder.Services.AddTransient<JwtSessionHandler>();
         builder.Services.AddSingleton<ICoreApiProbe, CoreApiProbe>();
         builder.Services.AddSingleton<AltaCoreClient>();
+        builder.Services.AddSingleton<IAltaSource, AltaSqlSource>();
+        builder.Services.AddSingleton<AltaMonitor>();
         builder.Services.AddHostedService<ProbeWorker>();
 
         builder.Services

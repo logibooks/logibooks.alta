@@ -132,21 +132,36 @@ internal sealed class AltaConsole(
 
         var dec = await RequiredAsync("DEC code: ", modeToken);
         var parcel = await RequiredAsync("Parcel number: ", modeToken);
-        var uin = await ReadAsync("UIN (blank if unavailable): ", modeToken);
-        var occurrence = await ReadAsync("Occurrence [1]: ", modeToken);
         var code = ReadInt(await RequiredAsync("Decision code: ", modeToken), 1, 99, "Decision code");
         var procedure = await RequiredAsync("Customs procedure code: ", modeToken);
         _ = ReadInt(procedure, 0, short.MaxValue, "Customs procedure code");
         var dateText = await ReadAsync("Decision time (ISO 8601 with time zone, optional): ", modeToken);
         DateTimeOffset? date = dateText.Length == 0 ? null : ReadDate(dateText);
         var payments = await ReadPaymentsAsync(modeToken);
-        var tnVed = await ReadAsync("TN VED (optional): ", modeToken);
         var weightText = await ReadAsync("Weight in kg (optional): ", modeToken);
         decimal? weight = weightText.Length == 0 ? null : ReadDecimal(weightText, "Weight");
 
-        var assignment = new AltaAssignment(parcel, BlankToNull(uin),
-            ReadInt(occurrence.Length == 0 ? "1" : occurrence, 1, int.MaxValue, "Occurrence"),
-            new AltaDecision(code, procedure, date), payments, BlankToNull(tnVed), weight);
+        var items = new List<AltaGoods>();
+        while (true)
+        {
+            var description = await ReadAsync(
+                items.Count == 0 ? "Goods description: " : "Next goods description (blank to finish): ", modeToken);
+            if (description.Length == 0)
+            {
+                if (items.Count == 0)
+                    throw new FormatException("At least one goods description is required.");
+                break;
+            }
+
+            var tnVed = await ReadAsync("TN VED (optional): ", modeToken);
+            var quantity = ReadDecimal(await RequiredAsync("Quantity: ", modeToken), "Quantity");
+            if (quantity < 1 || quantity != decimal.Truncate(quantity))
+                throw new FormatException("Quantity must be a positive whole number.");
+            var total = ReadDecimal(await RequiredAsync("Total cost for the full quantity: ", modeToken), "Total cost");
+            items.Add(new AltaGoods(description, BlankToNull(tnVed), quantity, total));
+        }
+
+        var assignment = new AltaAssignment(parcel, items, new AltaDecision(code, procedure, date), payments, weight);
         var batch = new AltaBatch(cmr, dec, [assignment]);
         terminal.WriteLine(SafeText($"Core: {scope.BaseUrl.Trim()} | database: {database}"));
         terminal.WriteLine(JsonSerializer.Serialize(batch, new JsonSerializerOptions(AltaCoreClient.JsonOptions) { WriteIndented = true }));

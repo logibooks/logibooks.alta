@@ -11,8 +11,10 @@ internal sealed record AltaWorklist([property: JsonRequired] IReadOnlyList<strin
 internal sealed record AltaBatch(string CmrNumber, string DecCode, IReadOnlyList<AltaAssignment> Assignments);
 
 internal sealed record AltaAssignment(
-    string ParcelNumber, string? Uin, int Occurrence, AltaDecision Decision, IReadOnlyList<AltaPayment> Payments,
-    string? TnVed = null, decimal? WeightKg = null);
+    string ParcelNumber, IReadOnlyList<AltaGoods> Items, AltaDecision Decision, IReadOnlyList<AltaPayment> Payments,
+    decimal? WeightKg = null);
+
+internal sealed record AltaGoods(string Description, string? TnVed, decimal Quantity, decimal TotalCost);
 
 internal sealed record AltaDecision(int Code, string CustomsProcedureCode, DateTimeOffset? DecisionAt = null);
 

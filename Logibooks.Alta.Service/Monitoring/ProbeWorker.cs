@@ -5,6 +5,7 @@
 using Logibooks.Alta.Configuration;
 using Logibooks.Alta.CoreApi;
 using Logibooks.Alta.Database;
+using Quartz;
 
 namespace Logibooks.Alta.Monitoring;
 
@@ -14,8 +15,9 @@ internal sealed class ProbeWorker(
     ICoreApiProbe coreApiProbe,
     IConfigurationReloadSignal reloadSignal,
     ILogger<ProbeWorker> logger,
-    AltaCoreClient? altaCore = null,
-    IAltaConsole? console = null) : BackgroundService
+    AltaMonitor? monitoring = null,
+    IAltaConsole? console = null,
+    TimeProvider? clock = null) : BackgroundService
 {
     private bool? _lastEnabledState;
 
@@ -26,6 +28,7 @@ internal sealed class ProbeWorker(
             ServiceConstants.DisplayName,
             VersionInfo.AppVersion);
 
+        RuntimeConfiguration? previous = null;
         while (!stoppingToken.IsCancellationRequested)
         {
             RuntimeConfiguration configuration;
@@ -35,6 +38,7 @@ internal sealed class ProbeWorker(
             }
             catch (RuntimeConfigurationException exception)
             {
+                previous = null;
                 logger.LogError("Configuration is invalid: {Errors}", string.Join("; ", exception.Errors));
                 await reloadSignal.WaitAsync(TimeSpan.FromSeconds(30), stoppingToken);
                 continue;
@@ -42,6 +46,8 @@ internal sealed class ProbeWorker(
 
             if (!configuration.Service.Enabled)
             {
+                previous = null;
+                monitoring?.Clear();
                 LogStateChange(false);
                 if (console is null)
                     await reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, stoppingToken);
@@ -51,26 +57,24 @@ internal sealed class ProbeWorker(
             }
 
             LogStateChange(true);
-            var cycleTasks = new List<Task>
+            if (previous is null || !AltaMonitor.SameRuntime(previous, configuration))
+                await RunCycleAsync(configuration, stoppingToken);
+
+            previous = configuration;
+            await using var schedule = new QuartzMonitoringSchedule(
+                clock ?? TimeProvider.System, token => RunCycleAsync(configuration, token), stoppingToken);
+            try
             {
-                RunDatabaseProbesAsync(configuration, stoppingToken)
-            };
-            if (configuration.Core.Enabled)
-            {
-                cycleTasks.Add(RunProbeAsync(
-                    "Logibooks Core",
-                    coreApiProbe.ProbeAsync,
-                    configuration,
-                    stoppingToken));
-                if (altaCore is not null)
-                    cycleTasks.Add(RefreshWorklistsAsync(altaCore, configuration, stoppingToken));
+                await schedule.StartAsync(configuration.Service);
             }
-
-            await Task.WhenAll(cycleTasks);
-
-            await reloadSignal.WaitAsync(
-                TimeSpan.FromSeconds(configuration.Service.PollIntervalSeconds),
-                stoppingToken);
+            catch (SchedulerException exception)
+            {
+                logger.LogError("Could not schedule Alta monitoring: {Failure}",
+                    SensitiveDataSanitizer.Sanitize(exception.Message, configuration));
+                await reloadSignal.WaitAsync(TimeSpan.FromSeconds(30), stoppingToken);
+                continue;
+            }
+            await reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, stoppingToken);
         }
     }
 
@@ -97,35 +101,23 @@ internal sealed class ProbeWorker(
         }
     }
 
-    private async Task RefreshWorklistsAsync(AltaCoreClient client, RuntimeConfiguration configuration, CancellationToken token)
+    private async Task RunCycleAsync(RuntimeConfiguration configuration, CancellationToken token)
     {
-        CoreOptions scope;
-        try
-        {
-            scope = client.CaptureConfiguration();
-        }
-        catch (CoreConfigurationException ex)
-        {
-            logger.LogWarning("Could not refresh Core worklists: {Failure}",
-                SensitiveDataSanitizer.Sanitize(ex.Message, configuration));
-            return;
-        }
+        var checks = new List<Task>();
+        // A monitoring read provides its own database health check.
+        if (!configuration.Core.Enabled || monitoring is null)
+            checks.Add(RunDatabaseProbesAsync(configuration, token));
 
-        await Parallel.ForEachAsync(configuration.Databases,
-            new ParallelOptions { MaxDegreeOfParallelism = configuration.MaxConcurrentDatabaseProbes, CancellationToken = token },
-            async (database, cancellationToken) =>
-            {
-                try
-                {
-                    var cmrs = await client.RefreshWorklistAsync(scope, database.Name, cancellationToken);
-                    logger.LogInformation("Core worklist for {DatabaseTarget} contains {Count} CMRs", database.Name, cmrs.Count);
-                }
-                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
-                {
-                    logger.LogWarning("Could not refresh Core worklist for {DatabaseTarget}: {Failure}", database.Name,
-                        SensitiveDataSanitizer.Sanitize(AltaCoreClient.DescribeReadFailure(ex), configuration));
-                }
-            });
+        if (configuration.Core.Enabled)
+        {
+            checks.Add(RunProbeAsync("Logibooks Core", coreApiProbe.ProbeAsync, configuration, token));
+            if (monitoring is not null)
+                checks.Add(monitoring.RunAsync(configuration, token));
+        }
+        else
+            monitoring?.Clear();
+
+        await Task.WhenAll(checks);
     }
 
     private async Task RunDatabaseProbesAsync(

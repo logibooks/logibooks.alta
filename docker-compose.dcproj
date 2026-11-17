@@ -7,12 +7,14 @@
     <DockerComposeProjectName>logibooks-alta</DockerComposeProjectName>
     <DockerComposeEnvFilePath Condition="Exists('$(MSBuildProjectDirectory)\.env')">.env</DockerComposeEnvFilePath>
     <DependencyAwareStart>True</DependencyAwareStart>
-    <DockerDevelopmentMode>Regular</DockerDevelopmentMode>
+    <DockerDevelopmentMode>Fast</DockerDevelopmentMode>
     <ProjectGuid>2ec3db01-c8a6-4feb-b49f-92f54305ae5b</ProjectGuid>
   </PropertyGroup>
   <ItemGroup>
     <None Include=".env" Condition="Exists('$(MSBuildProjectDirectory)\.env')" />
     <None Include="docker-compose.yml" />
+    <None Include="docker-compose.override.yml" />
+    <None Include="docker-compose.vs.debug.yml" />
     <None Include="launchSettings.json" />
     <None Include=".env.example" />
     <None Include="scripts\Start-Development.ps1" />

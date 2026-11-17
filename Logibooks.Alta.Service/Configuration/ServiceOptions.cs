@@ -9,5 +9,6 @@ internal sealed class ServiceOptions
     public const string SectionName = "Service";
 
     public bool Enabled { get; set; }
-    public int PollIntervalSeconds { get; set; } = 60;
+    public string MonitoringCron { get; set; } = "0 0 8-20/2 * * ?";
+    public string MonitoringTimeZone { get; set; } = "Europe/Moscow";
 }

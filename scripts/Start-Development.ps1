@@ -17,13 +17,14 @@ if ($LASTEXITCODE -ne 0 -or $engine -ne 'linux') {
 
 Push-Location $repositoryRoot
 try {
-    $modelJson = & docker compose config --format json
+    $compose = @('compose', '-f', 'docker-compose.yml')
+    $modelJson = & docker @compose config --format json
     if ($LASTEXITCODE -ne 0) {
         throw 'Set the existing SQL Server sa password in .env. See .env.example.'
     }
 
     $passwordPrefix = 'ALTA_DB_PASSWORD='
-    $composeEnvironment = & docker compose config --environment
+    $composeEnvironment = & docker @compose config --environment
     if ($LASTEXITCODE -ne 0) {
         throw 'Could not read the Compose environment.'
     }
@@ -44,7 +45,7 @@ try {
         }
     }
 
-    & docker compose up --detach --wait --wait-timeout 360
+    & docker @compose up --detach --wait --wait-timeout 360
     if ($LASTEXITCODE -ne 0) {
         throw "Docker Compose did not become ready. Check docker compose logs mssql adminer."
     }

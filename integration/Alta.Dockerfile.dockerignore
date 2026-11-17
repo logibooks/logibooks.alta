@@ -1,0 +1,9 @@
+**
+!Directory.Build.props
+!Directory.Packages.props
+!global.json
+!Logibooks.Alta.Service/
+!Logibooks.Alta.Service/**
+**/bin
+**/obj
+**/appsettings.Development.local.json

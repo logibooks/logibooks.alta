@@ -1,5 +1,20 @@
 {
   "profiles": {
+    "Logibooks (debug Alta)": {
+      "commandName": "DockerCompose",
+      "commandVersion": "1.0",
+      "composeLaunchAction": "LaunchBrowser",
+      "composeLaunchServiceName": "ui",
+      "composeLaunchUrl": "http://localhost:{ServicePort}",
+      "serviceActions": {
+        "db": "StartWithoutDebugging",
+        "mssql": "StartWithoutDebugging",
+        "adminer": "StartWithoutDebugging",
+        "core": "StartWithoutDebugging",
+        "ui": "StartWithoutDebugging",
+        "alta": "StartDebugging"
+      }
+    },
     "Docker Compose": {
       "commandName": "DockerCompose",
       "commandVersion": "1.0",

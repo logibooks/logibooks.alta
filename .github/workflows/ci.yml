@@ -109,9 +109,9 @@ jobs:
           if (Get-Service -Name LogibooksAltaAdapter -ErrorAction SilentlyContinue) { throw 'Uninstall left the service registered.' }
           if ((Get-FileHash -LiteralPath $config).Hash -ne $configHash) { throw 'Uninstall changed the configuration.' }
 
-      - name: Upload Windows setup EXE
-        uses: actions/upload-artifact@v6
-        with:
-          name: Logibooks.Alta.Setup
-          path: Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe
-          if-no-files-found: error
+#      - name: Upload Windows setup EXE
+#        uses: actions/upload-artifact@v6
+#        with:
+#          name: Logibooks.Alta.Setup
+#          path: Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe
+#          if-no-files-found: error
