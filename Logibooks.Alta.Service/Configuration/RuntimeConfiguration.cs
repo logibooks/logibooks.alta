@@ -18,7 +18,7 @@ internal sealed record RuntimeDatabaseTarget(string Name, string ConnectionStrin
 
 internal interface IRuntimeConfigurationProvider
 {
-    RuntimeConfiguration GetValidated();
+    RuntimeConfiguration GetValidated(bool allowDisabledConsole = false);
 }
 
 internal sealed class RuntimeConfigurationProvider(
@@ -27,19 +27,20 @@ internal sealed class RuntimeConfigurationProvider(
     IOptionsMonitor<DatabaseMonitoringOptions> databaseOptions,
     CoreUris coreUris) : IRuntimeConfigurationProvider
 {
-    public RuntimeConfiguration GetValidated()
+    public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false)
     {
         var service = serviceOptions.CurrentValue;
         var core = coreOptions.CurrentValue;
         var databases = databaseOptions.CurrentValue;
+        var validate = service.Enabled || !allowDisabledConsole;
         var errors = new List<string>();
 
-        if (service.PollIntervalSeconds is < 1 or > 86_400)
+        if (validate && service.PollIntervalSeconds is < 1 or > 86_400)
         {
             errors.Add("Service.PollIntervalSeconds must be between 1 and 86400");
         }
 
-        if (databases.MaxConcurrentProbes is < 1 or > 32)
+        if (validate && databases.MaxConcurrentProbes is < 1 or > 32)
         {
             errors.Add("Databases.MaxConcurrentProbes must be between 1 and 32");
         }
@@ -71,12 +72,12 @@ internal sealed class RuntimeConfigurationProvider(
             }
         }
 
-        if (core.RequestTimeoutSeconds is < 1 or > 300)
+        if (validate && core.RequestTimeoutSeconds is < 1 or > 300)
         {
             errors.Add("Core.RequestTimeoutSeconds must be between 1 and 300");
         }
 
-        if (core.JwtRefreshSkewMinutes is < 0 or > 1_440)
+        if (validate && core.JwtRefreshSkewMinutes is < 0 or > 1_440)
         {
             errors.Add("Core.JwtRefreshSkewMinutes must be between 0 and 1440");
         }

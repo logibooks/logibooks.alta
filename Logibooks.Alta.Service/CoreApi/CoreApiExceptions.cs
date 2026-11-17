@@ -16,8 +16,12 @@ internal sealed class CoreAuthenticationException(string message, Exception? inn
 
 internal sealed class CoreAuthorizationException(string message) : CoreApiException(message);
 
-internal sealed class CoreRequestException(HttpStatusCode statusCode)
-    : CoreApiException($"Logibooks Core returned HTTP status {(int)statusCode}.")
+internal sealed class CoreRequestException(HttpStatusCode statusCode, string? code = null, string? message = null)
+    : CoreApiException(message ?? $"Logibooks Core returned HTTP status {(int)statusCode}.")
 {
     public HttpStatusCode StatusCode { get; } = statusCode;
+    public string? Code { get; } = code;
 }
+
+internal sealed class AltaOutcomeUnknownException(Exception innerException)
+    : CoreApiException("Core did not confirm the submission outcome.", innerException);

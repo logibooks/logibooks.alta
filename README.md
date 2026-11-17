@@ -10,7 +10,7 @@ Logibooks Alta Adapter is a Windows application that monitors one or more Micros
 - Production SQL Server instances and databases remain external and are not installed or managed by the adapter.
 - In development, run the adapter on Windows with SQL Server 2025 and Adminer in Docker Desktop's Linux containers.
 - Each enabled target executes `SELECT CAST(1 AS int)`. Database probes run independently with bounded concurrency.
-- The optional Core probe runs concurrently with the database probes. It signs in through `POST /api/Auth/login`, requires the `adapter-alta` role, caches the JWT in memory, and calls `GET /api/Auth/check`.
+- When Core integration is enabled, the adapter checks its JWT session and refreshes the CMR worklist for each enabled database target. Core authorizes both the `adapter-alta` role and the target's configured writer account.
 - Transient network and HTTP 5xx failures receive up to three attempts with 1- and 2-second delays. One fresh-login retry is made after HTTP `401`.
 - Configuration reloads without restarting the process. A change received during an active probe cycle causes the next cycle to start immediately.
 - Logs identify database targets by configured name but sanitize connection strings, SQL passwords, Core passwords, and JWTs.
@@ -40,10 +40,12 @@ The `win-x64` profile publishes `Logibooks.Alta.Adapter.exe` under `bin\Release\
 
 Open `Logibooks.Alta.Adapter.Setup.exe` and choose the installation mode.
 
-- **Console app** installs for your Windows account without elevation. In the Start menu's **Logibooks** folder, use **Open Alta adapter configuration** to open `%LOCALAPPDATA%\Logibooks\Alta\appsettings.json`, then select **Start Alta adapter in console mode**. The adapter logs to the console and runs until you close it.
+- **Console app** installs for your Windows account without elevation. In the Start menu's **Logibooks** folder, use **Open Alta adapter configuration** to open `%LOCALAPPDATA%\Logibooks\Alta\appsettings.json`, then select **Start Alta adapter in console mode**. An attached console opens the interactive prompt when `Service.Enabled` is `false`. Set it to `true` to switch to monitoring output. Windows service and redirected runs are unattended.
 - **Windows service** requests administrator credentials, installs under `%ProgramFiles%\Logibooks\Alta`, and starts automatically under `LocalService`. Edit `%ProgramData%\Logibooks\Alta\appsettings.json` as an administrator. Administrators and SYSTEM receive full access, and `LocalService` receives read access. If an older MSI-based service is installed, uninstall it from **Installed apps** before choosing this mode.
 
 Both modes preserve their configuration during upgrades and uninstall. For unattended installation, use `/CURRENTUSER /VERYSILENT /NORESTART` for console mode or `/ALLUSERS /VERYSILENT /NORESTART` from an elevated prompt for service mode.
+
+At the `alta>` prompt, use `login` to verify the configured writer session, `worklist [database]` to list CMRs, and `submit` to enter and preview a one-item customs batch. Type `y` at the confirmation prompt to send it. `status` shows recent Core results. `help` lists commands and `exit` stops the adapter. Configuration reload switches between the prompt and monitoring after any in-flight operation finishes or times out.
 
 Windows installations write rolling logs under `%ProgramData%\Logibooks\Alta\Logs` for the service and `%LOCALAPPDATA%\Logibooks\Alta\Logs` for the console app. Log files rotate daily or at 10 MiB, with up to 14 files retained. Use `Logging:LogLevel` to set severity and `Logging:File:Enabled` to toggle file logging. `Logging:File:Directory` accepts an absolute path or a path relative to `appsettings.json`. A custom service log directory must grant `LocalService` modify access. Restart the adapter after changing file logging settings.
 

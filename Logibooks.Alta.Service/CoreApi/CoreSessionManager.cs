@@ -13,7 +13,7 @@ namespace Logibooks.Alta.CoreApi;
 
 internal interface ICoreSessionManager
 {
-    Task<string> GetTokenAsync(CancellationToken cancellationToken);
+    Task<string> GetTokenAsync(CancellationToken cancellationToken, CoreOptions? options = null);
     void InvalidateToken(string token);
 }
 
@@ -27,7 +27,6 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
     private readonly ILogger<CoreSessionManager> _logger;
     private readonly CoreUris _coreUris;
     private readonly SemaphoreSlim _loginLock = new(1, 1);
-    private readonly IDisposable? _optionsRegistration;
     private TokenState? _tokenState;
 
     public CoreSessionManager(
@@ -44,12 +43,12 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
         _timeProvider = timeProvider;
         _logger = logger;
         _coreUris = coreUris;
-        _optionsRegistration = options.OnChange((_, _) => Volatile.Write(ref _tokenState, null));
     }
 
-    public async Task<string> GetTokenAsync(CancellationToken cancellationToken)
+    public async Task<string> GetTokenAsync(CancellationToken cancellationToken, CoreOptions? options = null)
     {
-        var options = _options.CurrentValue;
+        options ??= _options.CurrentValue;
+        EnsureCurrent(options);
         var existing = Volatile.Read(ref _tokenState);
         if (IsUsable(existing, options))
         {
@@ -59,7 +58,7 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
         await _loginLock.WaitAsync(cancellationToken);
         try
         {
-            options = _options.CurrentValue;
+            EnsureCurrent(options);
             existing = Volatile.Read(ref _tokenState);
             if (IsUsable(existing, options))
             {
@@ -67,6 +66,7 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
             }
 
             var token = await LoginAsync(options, cancellationToken);
+            EnsureCurrent(options);
             Volatile.Write(ref _tokenState, token);
             _logger.LogInformation("A Logibooks Core JWT session was established");
             return token.Token;
@@ -88,12 +88,19 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
 
     public void Dispose()
     {
-        _optionsRegistration?.Dispose();
         _loginLock.Dispose();
     }
 
+    private void EnsureCurrent(CoreOptions options)
+    {
+        if (!ReferenceEquals(_options.CurrentValue, options))
+        {
+            throw new CoreConfigurationException("Core configuration changed. Start the request again.");
+        }
+    }
+
     private bool IsUsable(TokenState? state, CoreOptions options) =>
-        state is not null &&
+        state is not null && ReferenceEquals(state.Options, options) &&
         state.ExpiresAtUtc > _timeProvider.GetUtcNow().AddMinutes(options.JwtRefreshSkewMinutes);
 
     private async Task<TokenState> LoginAsync(CoreOptions options, CancellationToken cancellationToken)
@@ -111,7 +118,7 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
             client,
             () => new HttpRequestMessage(HttpMethod.Post, loginUri)
             {
-                Content = JsonContent.Create(new LoginRequest(options.Email, options.Password))
+            Content = JsonContent.Create(new LoginRequest(options.Email.Trim(), options.Password))
             },
             timeout,
             cancellationToken);
@@ -147,7 +154,7 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
 
             return new TokenState(
                 login.Token,
-                DateTimeOffset.FromUnixTimeSeconds(jwt.Payload.Expiration.Value));
+                DateTimeOffset.FromUnixTimeSeconds(jwt.Payload.Expiration.Value), options);
         }
         catch (ArgumentException exception)
         {
@@ -157,7 +164,7 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
         }
     }
 
-    private sealed record TokenState(string Token, DateTimeOffset ExpiresAtUtc);
+    private sealed record TokenState(string Token, DateTimeOffset ExpiresAtUtc, CoreOptions Options);
 
     private sealed record LoginRequest(
         [property: JsonPropertyName("email")] string Email,

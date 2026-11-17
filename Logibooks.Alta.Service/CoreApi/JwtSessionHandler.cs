@@ -4,17 +4,21 @@
 
 using System.Net;
 using System.Net.Http.Headers;
+using Logibooks.Alta.Configuration;
 
 namespace Logibooks.Alta.CoreApi;
 
 internal sealed class JwtSessionHandler(ICoreSessionManager sessionManager) : DelegatingHandler
 {
+    internal static readonly HttpRequestOptionsKey<CoreOptions> Configuration = new("AltaCoreConfiguration");
+
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
         using var retryRequest = await CloneAsync(request, cancellationToken);
-        var token = await sessionManager.GetTokenAsync(cancellationToken);
+        request.Options.TryGetValue(Configuration, out var options);
+        var token = await sessionManager.GetTokenAsync(cancellationToken, options);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         var response = await base.SendAsync(request, cancellationToken);
@@ -25,7 +29,7 @@ internal sealed class JwtSessionHandler(ICoreSessionManager sessionManager) : De
 
         response.Dispose();
         sessionManager.InvalidateToken(token);
-        var refreshedToken = await sessionManager.GetTokenAsync(cancellationToken);
+        var refreshedToken = await sessionManager.GetTokenAsync(cancellationToken, options);
         retryRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", refreshedToken);
         return await base.SendAsync(retryRequest, cancellationToken);
     }

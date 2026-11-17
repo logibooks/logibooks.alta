@@ -28,6 +28,17 @@ public sealed class ConfigurationTests
     }
 
     [Test]
+    public void DisabledConsoleCanStartWithCoreSettingsThatItsCommandsWillReject()
+    {
+        var core = ValidCore();
+        core.RequestTimeoutSeconds = 0;
+        var provider = CreateProvider(new ServiceOptions(), core, new DatabaseMonitoringOptions());
+
+        Assert.That(provider.GetValidated(allowDisabledConsole: true).Service.Enabled, Is.False);
+        Assert.That(() => provider.GetValidated(), Throws.TypeOf<RuntimeConfigurationException>());
+    }
+
+    [Test]
     public void EnabledConfiguration_ReportsAllRequiredFieldsWithoutValues()
     {
         var provider = CreateProvider(

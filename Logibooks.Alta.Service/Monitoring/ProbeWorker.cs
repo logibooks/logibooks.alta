@@ -13,7 +13,9 @@ internal sealed class ProbeWorker(
     IMssqlProbe mssqlProbe,
     ICoreApiProbe coreApiProbe,
     IConfigurationReloadSignal reloadSignal,
-    ILogger<ProbeWorker> logger) : BackgroundService
+    ILogger<ProbeWorker> logger,
+    AltaCoreClient? altaCore = null,
+    IAltaConsole? console = null) : BackgroundService
 {
     private bool? _lastEnabledState;
 
@@ -29,7 +31,7 @@ internal sealed class ProbeWorker(
             RuntimeConfiguration configuration;
             try
             {
-                configuration = configurationProvider.GetValidated();
+                configuration = configurationProvider.GetValidated(allowDisabledConsole: console is not null);
             }
             catch (RuntimeConfigurationException exception)
             {
@@ -41,7 +43,10 @@ internal sealed class ProbeWorker(
             if (!configuration.Service.Enabled)
             {
                 LogStateChange(false);
-                await reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, stoppingToken);
+                if (console is null)
+                    await reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, stoppingToken);
+                else
+                    await RunConsoleUntilReloadAsync(console, stoppingToken);
                 continue;
             }
 
@@ -57,6 +62,8 @@ internal sealed class ProbeWorker(
                     coreApiProbe.ProbeAsync,
                     configuration,
                     stoppingToken));
+                if (altaCore is not null)
+                    cycleTasks.Add(RefreshWorklistsAsync(altaCore, configuration, stoppingToken));
             }
 
             await Task.WhenAll(cycleTasks);
@@ -65,6 +72,60 @@ internal sealed class ProbeWorker(
                 TimeSpan.FromSeconds(configuration.Service.PollIntervalSeconds),
                 stoppingToken);
         }
+    }
+
+    private async Task RunConsoleUntilReloadAsync(IAltaConsole interactiveConsole, CancellationToken stoppingToken)
+    {
+        using var mode = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var reload = reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, mode.Token);
+        var session = interactiveConsole.RunAsync(mode.Token, stoppingToken);
+        try
+        {
+            await Task.WhenAny(reload, session);
+        }
+        finally
+        {
+            await mode.CancelAsync();
+            try
+            {
+                await Task.WhenAll(reload, session);
+            }
+            catch (OperationCanceledException) when (mode.IsCancellationRequested)
+            {
+                // Reload or shutdown interrupted console input or a preflight read.
+            }
+        }
+    }
+
+    private async Task RefreshWorklistsAsync(AltaCoreClient client, RuntimeConfiguration configuration, CancellationToken token)
+    {
+        CoreOptions scope;
+        try
+        {
+            scope = client.CaptureConfiguration();
+        }
+        catch (CoreConfigurationException ex)
+        {
+            logger.LogWarning("Could not refresh Core worklists: {Failure}",
+                SensitiveDataSanitizer.Sanitize(ex.Message, configuration));
+            return;
+        }
+
+        await Parallel.ForEachAsync(configuration.Databases,
+            new ParallelOptions { MaxDegreeOfParallelism = configuration.MaxConcurrentDatabaseProbes, CancellationToken = token },
+            async (database, cancellationToken) =>
+            {
+                try
+                {
+                    var cmrs = await client.RefreshWorklistAsync(scope, database.Name, cancellationToken);
+                    logger.LogInformation("Core worklist for {DatabaseTarget} contains {Count} CMRs", database.Name, cmrs.Count);
+                }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    logger.LogWarning("Could not refresh Core worklist for {DatabaseTarget}: {Failure}", database.Name,
+                        SensitiveDataSanitizer.Sanitize(AltaCoreClient.DescribeReadFailure(ex), configuration));
+                }
+            });
     }
 
     private async Task RunDatabaseProbesAsync(
