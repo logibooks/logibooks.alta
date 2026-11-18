@@ -38,6 +38,42 @@ public sealed class ProbeWorkerTests
     }
 
     [Test]
+    public async Task ExpiredScheduleIsRejectedBeforeStartupRunsAnyProbes()
+    {
+        var settings = new ServiceOptions { Enabled = true, MonitoringCron = "0 0 8 1 1 ? 2026", MonitoringTimeZone = "UTC" };
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 1, 1, 9, 0, 0, TimeSpan.Zero));
+        using var provider = new RuntimeConfigurationProvider(new TestOptionsMonitor<ServiceOptions>(settings),
+            new TestOptionsMonitor<CoreOptions>(ValidConfiguration(enabled: true).Core),
+            new TestOptionsMonitor<DatabaseMonitoringOptions>(new()
+            {
+                Targets = [new DatabaseTargetOptions { Enabled = true, Name = "Alta", ConnectionString = "Server=db" }]
+            }), new CoreUris(false));
+        var databaseProbe = new TestMssqlProbe();
+        var coreProbe = new TestCoreProbe();
+        var signal = new BlockingReloadSignal();
+        var logger = new ListLogger<ProbeWorker>();
+        using var worker = new ProbeWorker(provider, databaseProbe, coreProbe, signal, logger, clock: clock);
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await signal.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(databaseProbe.Calls, Is.Zero);
+            Assert.That(coreProbe.Calls, Is.Zero);
+            Assert.That(logger.Entries.Any(entry => entry.Level == LogLevel.Error &&
+                entry.Message.Contains("must schedule a future firing", StringComparison.Ordinal)), Is.True);
+        });
+    }
+
+    [Test]
     public async Task ConfigurationReload_EnablesAllDatabaseProbesImmediately()
     {
         var provider = new SequenceConfigurationProvider(
@@ -293,7 +329,7 @@ public sealed class ProbeWorkerTests
     private sealed class StaticConfigurationProvider(RuntimeConfiguration configuration)
         : IRuntimeConfigurationProvider
     {
-        public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false) => configuration;
+        public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null) => configuration;
     }
 
     private sealed class SequenceConfigurationProvider(params RuntimeConfiguration[] configurations)
@@ -301,7 +337,7 @@ public sealed class ProbeWorkerTests
     {
         private int _index;
 
-        public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false)
+        public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null)
         {
             var index = Math.Min(Interlocked.Increment(ref _index) - 1, configurations.Length - 1);
             return configurations[index];

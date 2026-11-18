@@ -26,7 +26,7 @@ internal sealed record RuntimeDatabaseTarget(string Name, string ConnectionStrin
 
 internal interface IRuntimeConfigurationProvider
 {
-    RuntimeConfiguration GetValidated(bool allowDisabledConsole = false);
+    RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null);
 }
 
 internal sealed class RuntimeConfigurationProvider : IRuntimeConfigurationProvider, IDisposable
@@ -61,7 +61,7 @@ internal sealed class RuntimeConfigurationProvider : IRuntimeConfigurationProvid
         ];
     }
 
-    public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false)
+    public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null)
     {
         ServiceOptions service;
         CoreOptions core;
@@ -91,7 +91,8 @@ internal sealed class RuntimeConfigurationProvider : IRuntimeConfigurationProvid
                 errors.Add("Service.MonitoringCron must be a valid Quartz cron expression");
             if (!TimeZoneInfo.TryFindSystemTimeZoneById(service.MonitoringTimeZone?.Trim() ?? "", out var zone))
                 errors.Add("Service.MonitoringTimeZone must identify a time zone available on this host");
-            else if (hasCron && new CronExpression(cron) { TimeZone = zone }.GetNextValidTimeAfter(DateTimeOffset.UtcNow) is null)
+            else if (hasCron && scheduleFrom is { } from &&
+                new CronExpression(cron) { TimeZone = zone }.GetNextValidTimeAfter(from) is null)
                 errors.Add("Service.MonitoringCron must schedule a future firing");
         }
 

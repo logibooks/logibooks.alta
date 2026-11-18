@@ -58,18 +58,6 @@ public sealed class ConfigurationTests
     }
 
     [Test]
-    public void ExpiredCronDoesNotReachTheScheduler()
-    {
-        using var provider = new RuntimeConfigurationProvider(
-            new TestOptionsMonitor<ServiceOptions>(new() { Enabled = true, MonitoringCron = "0 0 8 1 1 ? 2000" }),
-            new TestOptionsMonitor<CoreOptions>(ValidCore()),
-            new TestOptionsMonitor<DatabaseMonitoringOptions>(ValidDatabases()), new CoreUris(false));
-
-        Assert.That(() => provider.GetValidated(),
-            Throws.TypeOf<RuntimeConfigurationException>().With.Message.Contains("future firing"));
-    }
-
-    [Test]
     public void ScopeChangesEvenIfConfigurationReturnsToItsPreviousValuesBetweenPolls()
     {
         var service = new TestOptionsMonitor<ServiceOptions>(new() { Enabled = true });

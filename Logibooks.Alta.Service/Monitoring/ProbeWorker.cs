@@ -28,13 +28,16 @@ internal sealed class ProbeWorker(
             ServiceConstants.DisplayName,
             VersionInfo.AppVersion);
 
+        var schedulingClock = clock ?? TimeProvider.System;
         RuntimeConfiguration? previous = null;
         while (!stoppingToken.IsCancellationRequested)
         {
             RuntimeConfiguration configuration;
             try
             {
-                configuration = configurationProvider.GetValidated(allowDisabledConsole: console is not null);
+                // Only schedule admission requires another firing; an active cycle can be the last one.
+                configuration = configurationProvider.GetValidated(allowDisabledConsole: console is not null,
+                    scheduleFrom: schedulingClock.GetUtcNow());
             }
             catch (RuntimeConfigurationException exception)
             {
@@ -62,7 +65,7 @@ internal sealed class ProbeWorker(
 
             previous = configuration;
             await using var schedule = new QuartzMonitoringSchedule(
-                clock ?? TimeProvider.System, token => RunCycleAsync(configuration, token), stoppingToken);
+                schedulingClock, token => RunCycleAsync(configuration, token), stoppingToken);
             try
             {
                 await schedule.StartAsync(configuration.Service);

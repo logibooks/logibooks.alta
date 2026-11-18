@@ -242,6 +242,33 @@ public sealed class MonitoringTests
     }
 
     [Test]
+    public async Task FinalQuartzFiringStillSubmitsAfterTheScheduleHasNoNextOccurrence()
+    {
+        using var fixture = new MonitoringFixture();
+        var settings = new ServiceOptions { Enabled = true, MonitoringCron = "0 0 20 1 1 ? 2026", MonitoringTimeZone = "UTC" };
+        using var provider = new RuntimeConfigurationProvider(new TestOptionsMonitor<ServiceOptions>(settings),
+            fixture.Options, new TestOptionsMonitor<DatabaseMonitoringOptions>(new()
+            {
+                Targets = [new DatabaseTargetOptions { Enabled = true, Name = "Alta", ConnectionString = "Server=db" }]
+            }), new CoreUris(false));
+
+        var configuration = provider.GetValidated(scheduleFrom: fixture.Clock.UtcNow);
+        var cron = new CronExpression(settings.MonitoringCron) { TimeZone = TimeZoneInfo.Utc };
+        var finalFiring = cron.GetNextValidTimeAfter(fixture.Clock.UtcNow)!.Value;
+        fixture.Put(Snapshot("CMR-1", Parcel("0001")));
+        var monitor = fixture.CreateMonitor(provider);
+        await using var schedule = new QuartzMonitoringSchedule(fixture.Clock,
+            token => monitor.RunAsync(configuration, token), CancellationToken.None);
+
+        fixture.Clock.UtcNow = finalFiring.AddSeconds(1);
+        Assert.That(cron.GetNextValidTimeAfter(fixture.Clock.UtcNow), Is.Null);
+        await schedule.RunAsync(finalFiring);
+
+        Assert.That(fixture.Submissions.SelectMany(batch => batch.Assignments).Select(item => item.ParcelNumber),
+            Is.EqualTo(new[] { "0001" }));
+    }
+
+    [Test]
     public void ConfiguredExampleRunsAtSevenMoscowTimes()
     {
         var options = new ServiceOptions();
@@ -391,6 +418,7 @@ public sealed class MonitoringTests
     private sealed class MonitoringFixture : IDisposable
     {
         private readonly RecordingHttpHandler _handler;
+        private readonly AltaCoreClient _core;
         private readonly AltaMonitor _monitor;
         public SourceFixture Source { get; } = new();
         public MutableTimeProvider Clock { get; } = new(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
@@ -410,10 +438,13 @@ public sealed class MonitoringTests
                 new ServiceOptions { Enabled = true }, coreOptions, 1, [new RuntimeDatabaseTarget("Alta", "source")]));
             _handler = new RecordingHttpHandler(ReplyAsync);
             Options = new TestOptionsMonitor<CoreOptions>(coreOptions);
-            var core = new AltaCoreClient(Options, new HttpFactory(_handler),
+            _core = new AltaCoreClient(Options, new HttpFactory(_handler),
                 new HttpRetryExecutor(new NoRetryDelay()), new CoreUris(false));
-            _monitor = new AltaMonitor(Source, core, Configuration, Clock, NullLogger<AltaMonitor>.Instance);
+            _monitor = CreateMonitor(Configuration);
         }
+
+        public AltaMonitor CreateMonitor(IRuntimeConfigurationProvider configuration) =>
+            new(Source, _core, configuration, Clock, NullLogger<AltaMonitor>.Instance);
 
         public Task PollAsync() => _monitor.RunAsync(Configuration.Current, CancellationToken.None);
 
@@ -451,7 +482,7 @@ public sealed class MonitoringTests
     private sealed class ConfigurationFixture(RuntimeConfiguration configuration) : IRuntimeConfigurationProvider
     {
         public RuntimeConfiguration Current { get; set; } = configuration;
-        public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false) => Current;
+        public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null) => Current;
     }
 
     private sealed class HttpFactory(HttpMessageHandler handler) : IHttpClientFactory
