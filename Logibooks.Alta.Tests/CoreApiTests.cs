@@ -215,6 +215,38 @@ public sealed class CoreSessionManagerTests
     }
 
     [Test]
+    public async Task ReloadDuringLoginDoesNotPublishTheOldSession()
+    {
+        var firstToken = CreateToken(Now.AddHours(1), "old");
+        var secondToken = CreateToken(Now.AddHours(1), "new");
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new RecordingHttpHandler(async (_, call, token) =>
+        {
+            if (call == 1)
+            {
+                entered.TrySetResult();
+                await finish.Task.WaitAsync(token);
+            }
+            return LoginResponse(call == 1 ? firstToken : secondToken, "adapter-alta");
+        });
+        var old = ValidOptions();
+        var options = new TestOptionsMonitor<CoreOptions>(old);
+        using var session = CreateSession(handler, options, new MutableTimeProvider(Now));
+
+        var pending = session.GetTokenAsync(CancellationToken.None, old);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var replacement = ValidOptions();
+        replacement.BaseUrl = "https://other.example";
+        options.Set(replacement);
+        finish.TrySetResult();
+
+        Assert.That(async () => await pending, Throws.TypeOf<CoreConfigurationException>());
+        Assert.That(await session.GetTokenAsync(CancellationToken.None, replacement), Is.EqualTo(secondToken));
+        Assert.That(handler.Requests.Select(request => request.Uri!.Host), Is.EqualTo(new[] { "core.example", "other.example" }));
+    }
+
+    [Test]
     public async Task GetTokenAsync_PreservesMalformedJwtParsingFailure()
     {
         var handler = LoginHandler(_ => LoginResponse("not-a-jwt", "adapter-alta"));
@@ -353,7 +385,7 @@ public sealed class JwtSessionHandlerTests
         public int GetTokenCalls { get; private set; }
         public List<string> InvalidatedTokens { get; } = [];
 
-        public Task<string> GetTokenAsync(CancellationToken cancellationToken)
+        public Task<string> GetTokenAsync(CancellationToken cancellationToken, CoreOptions? options = null)
         {
             GetTokenCalls++;
             return Task.FromResult(_tokens.Dequeue());

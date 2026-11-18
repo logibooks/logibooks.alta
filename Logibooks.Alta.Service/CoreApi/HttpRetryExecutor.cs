@@ -44,7 +44,7 @@ internal sealed class HttpRetryExecutor(IRetryDelay retryDelay) : IHttpRetryExec
 
                 var response = await client.SendAsync(
                     request,
-                    HttpCompletionOption.ResponseHeadersRead,
+                    HttpCompletionOption.ResponseContentRead,
                     timeoutSource.Token);
 
                 if ((int)response.StatusCode < 500 || attempt == MaximumAttempts)

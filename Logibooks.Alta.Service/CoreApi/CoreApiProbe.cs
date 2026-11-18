@@ -27,7 +27,12 @@ internal sealed class CoreApiProbe(
 
         using var response = await retryExecutor.SendAsync(
             client,
-            () => new HttpRequestMessage(HttpMethod.Get, checkUri),
+            () =>
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, checkUri);
+                request.Options.Set(JwtSessionHandler.Configuration, current);
+                return request;
+            },
             TimeSpan.FromSeconds(current.RequestTimeoutSeconds),
             cancellationToken);
 

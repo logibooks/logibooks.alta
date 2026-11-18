@@ -25,7 +25,7 @@ public sealed class HostConstructionTests
         File.WriteAllText(configurationPath, """
             {
               "Logging": { "File": { "Enabled": true } },
-              "Service": { "Enabled": false, "PollIntervalSeconds": 60 },
+              "Service": { "Enabled": false, "MonitoringCron": "0 0 8-20/2 * * ?" },
               "Databases": { "MaxConcurrentProbes": 4, "Targets": [] },
               "Core": { "Enabled": true, "RequestTimeoutSeconds": 30, "JwtRefreshSkewMinutes": 5 }
             }
@@ -69,7 +69,7 @@ public sealed class HostConstructionTests
         var configurationPath = Path.Combine(configurationDirectory, "appsettings.json");
         File.WriteAllText(configurationPath, """
             {
-              "Service": { "Enabled": true, "PollIntervalSeconds": 60 },
+              "Service": { "Enabled": true, "MonitoringCron": "0 0 8-20/2 * * ?" },
               "Databases": {
                 "MaxConcurrentProbes": 4,
                 "Targets": [
@@ -151,7 +151,7 @@ public sealed class DevelopmentArtifactTests
     }
 
     [Test]
-    public void VisualStudioComposeProject_LaunchesInfrastructureAlongsideWindowsAdapter()
+    public void VisualStudioComposeProject_ConfiguresFullStackAndSqlOnlyProfiles()
     {
         var root = FindRepositoryRoot();
         var composeProject = XDocument.Load(Path.Combine(root, "docker-compose.dcproj"));
@@ -171,12 +171,28 @@ public sealed class DevelopmentArtifactTests
             Assert.That(composeProject.Descendants("DockerTargetOS").Single().Value, Is.EqualTo("Linux"));
             Assert.That(composeProject.Descendants("DependencyAwareStart").Single().Value, Is.EqualTo("True"));
             Assert.That(composeProject.Descendants("DockerComposeEnvFilePath").Single().Value, Is.EqualTo(".env"));
+            Assert.That(composeProject.Descendants("None").Select(element => (string?)element.Attribute("Include")),
+                Does.Contain("docker-compose.override.yml"));
             Assert.That(solution, Does.Contain("docker-compose.dcproj"));
-            Assert.That(serviceProject.Descendants("DockerComposeProjectPath"), Is.Empty);
-            foreach (var profile in profiles.EnumerateObject())
+            Assert.That(serviceProject.Descendants("DockerComposeProjectPath").Single().Value,
+                Is.EqualTo(@"..\docker-compose.dcproj"));
+
+            var integration = profiles.GetProperty("Logibooks (debug Alta)");
+            Assert.That(integration.GetProperty("commandName").GetString(), Is.EqualTo("DockerCompose"));
+            Assert.That(integration.GetProperty("composeLaunchServiceName").GetString(), Is.EqualTo("ui"));
+            var integrationActions = integration.GetProperty("serviceActions").EnumerateObject()
+                .ToDictionary(action => action.Name, action => action.Value.GetString());
+            Assert.That(integrationActions.Keys,
+                Is.EquivalentTo(new[] { "db", "mssql", "adminer", "core", "ui", "alta" }));
+            Assert.That(integrationActions["alta"], Is.EqualTo("StartDebugging"));
+            Assert.That(integrationActions.Where(action => action.Key != "alta").Select(action => action.Value),
+                Is.All.EqualTo("StartWithoutDebugging"));
+
+            foreach (var name in new[] { "Docker Compose", "Docker Compose (Adminer)" })
             {
-                Assert.That(profile.Value.GetProperty("commandName").GetString(), Is.EqualTo("DockerCompose"));
-                var actions = profile.Value.GetProperty("serviceActions").EnumerateObject().ToArray();
+                var profile = profiles.GetProperty(name);
+                Assert.That(profile.GetProperty("commandName").GetString(), Is.EqualTo("DockerCompose"));
+                var actions = profile.GetProperty("serviceActions").EnumerateObject().ToArray();
                 Assert.That(actions.Select(action => action.Name), Is.EquivalentTo(new[] { "mssql", "adminer" }));
                 Assert.That(actions.Select(action => action.Value.GetString()), Is.All.EqualTo("StartWithoutDebugging"));
             }

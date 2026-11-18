@@ -9,10 +9,12 @@ Logibooks Alta Adapter is a Windows application that monitors one or more Micros
 - The self-contained x64 adapter runs as the `LogibooksAltaAdapter` Windows service under `LocalService` or as a console app under the current Windows account.
 - Production SQL Server instances and databases remain external and are not installed or managed by the adapter.
 - In development, run the adapter on Windows with SQL Server 2025 and Adminer in Docker Desktop's Linux containers.
-- Each enabled target executes `SELECT CAST(1 AS int)`. Database probes run independently with bounded concurrency.
-- The optional Core probe runs concurrently with the database probes. It signs in through `POST /api/Auth/login`, requires the `adapter-alta` role, caches the JWT in memory, and calls `GET /api/Auth/check`.
-- Transient network and HTTP 5xx failures receive up to three attempts with 1- and 2-second delays. One fresh-login retry is made after HTTP `401`.
-- Configuration reloads without restarting the process. A change received during an active probe cycle causes the next cycle to start immediately.
+- Quartz runs an initial cycle on enabled startup, then follows the configured cron and time zone. A running cycle causes overlapping firings to be skipped.
+- With Core enabled, each cycle refreshes the CMR worklist and reads the matching Alta declarations and IndPost parcels. New or changed assignments get their goods from `E2IList` on demand. The adapter uses `Docs.PARENTGID` to verify an invoice belongs to the linked IndPost document and to select among invoices with the same number. Ambiguous or incomplete assignments stay pending. The adapter keeps the monitoring baseline in memory and reads the goods again when retrying a submission.
+- With Core disabled, enabled SQL targets receive a connectivity probe. Target concurrency is bounded in either mode. Core authorizes both the `adapter-alta` role and the target's configured writer account.
+- Transient GET failures receive up to three attempts with 1- and 2-second delays. An explicit HTTP `401` permits one fresh-login retry. A submission with an unknown outcome can be retried during a later eligible cycle.
+- Configuration reload applies schedule changes without rebuilding the monitoring baseline. Changing the SQL source or Core destination or writer starts a fresh baseline for that scope.
+- Enable submissions after Core and the adapter support the array-based Alta batch contract.
 - Logs identify database targets by configured name but sanitize connection strings, SQL passwords, Core passwords, and JWTs.
 
 ## Build and test
@@ -40,10 +42,12 @@ The `win-x64` profile publishes `Logibooks.Alta.Adapter.exe` under `bin\Release\
 
 Open `Logibooks.Alta.Adapter.Setup.exe` and choose the installation mode.
 
-- **Console app** installs for your Windows account without elevation. In the Start menu's **Logibooks** folder, use **Open Alta adapter configuration** to open `%LOCALAPPDATA%\Logibooks\Alta\appsettings.json`, then select **Start Alta adapter in console mode**. The adapter logs to the console and runs until you close it.
+- **Console app** installs for your Windows account without elevation. In the Start menu's **Logibooks** folder, use **Open Alta adapter configuration** to open `%LOCALAPPDATA%\Logibooks\Alta\appsettings.json`, then select **Start Alta adapter in console mode**. An attached console opens the interactive prompt when `Service.Enabled` is `false`. Set it to `true` to switch to monitoring output. Windows service and redirected runs are unattended.
 - **Windows service** requests administrator credentials, installs under `%ProgramFiles%\Logibooks\Alta`, and starts automatically under `LocalService`. Edit `%ProgramData%\Logibooks\Alta\appsettings.json` as an administrator. Administrators and SYSTEM receive full access, and `LocalService` receives read access. If an older MSI-based service is installed, uninstall it from **Installed apps** before choosing this mode.
 
 Both modes preserve their configuration during upgrades and uninstall. For unattended installation, use `/CURRENTUSER /VERYSILENT /NORESTART` for console mode or `/ALLUSERS /VERYSILENT /NORESTART` from an elevated prompt for service mode.
+
+At the `alta>` prompt, use `login` to verify the configured writer session, `worklist [database]` to list CMRs, and `submit` to enter and preview one customs decision for a parcel number. Add all goods before submitting. Each goods entry has a description, optional TN VED, quantity, and total cost for that quantity. Type `y` at the confirmation prompt to send it. `status` shows recent Core results. `help` lists commands and `exit` stops the adapter. Configuration reload switches between the prompt and monitoring after any in-flight operation finishes or times out.
 
 Windows installations write rolling logs under `%ProgramData%\Logibooks\Alta\Logs` for the service and `%LOCALAPPDATA%\Logibooks\Alta\Logs` for the console app. Log files rotate daily or at 10 MiB, with up to 14 files retained. Use `Logging:LogLevel` to set severity and `Logging:File:Enabled` to toggle file logging. `Logging:File:Directory` accepts an absolute path or a path relative to `appsettings.json`. A custom service log directory must grant `LocalService` modify access. Restart the adapter after changing file logging settings.
 
@@ -53,7 +57,8 @@ An existing 0.1.0 configuration using `ConnectionStrings.AltaDatabase` must be u
 {
   "Service": {
     "Enabled": false,
-    "PollIntervalSeconds": 60
+    "MonitoringCron": "0 0 8-20/2 * * ?",
+    "MonitoringTimeZone": "Europe/Moscow"
   },
   "Databases": {
     "MaxConcurrentProbes": 4,
@@ -105,9 +110,32 @@ Compose pulls the prebuilt `adminer:5.5.0-standalone` image with MS SQL support.
 docker compose exec mssql sqlcmd -S localhost -U sa -d reestr_1 -C
 ```
 
+### Full Compose stack
+
+Run the full stack from the Alta repository with Docker Desktop in Linux container mode.
+
+```powershell
+docker compose up -d
+```
+
+- The `db` service mounts the existing PostgreSQL 17 cluster from `../.pgdata`. Set `LOGIBOOKS_CORE_PGDATA` in `.env` if your data directory is elsewhere. Run one stack at a time against that directory. If the standalone Core stack currently owns it, stop that stack before starting Alta's full stack.
+- Keep the `core` and `ui` checkouts next to Alta, or set `LOGIBOOKS_CORE_DIR` and `LOGIBOOKS_UI_DIR` in `.env`.
+- Sign in to the [local UI](http://localhost:18082) with your existing Logibooks account. Core connects to the existing `logibooks` database and applies its normal startup migrations. [Core Swagger](http://localhost:18080/swagger) is available on the host.
+- To use Core worklists, set `Core__Enabled=true`, `Core__Email`, `Core__Password`, and `AltaMonitoring__WriterUserIds__reestr_1` in `.env` for an existing account with the `adapter-alta` role. The worklist uses registers with a CMR number, `reestr_1` as their Alta database, and a status with Alta monitoring enabled.
+- Alta uses the `reestr_1` SQL password from `.env`. If the password contains a double quote, set `ALTA_SQL_CONNECTION_STRING` to the complete SQL connection string with the password escaped as required by SqlClient.
+
+Open [Adminer](http://localhost:8083) and choose the connection for the database you want to inspect.
+
+| System | Server | Database | Username | Password setting |
+| --- | --- | --- | --- | --- |
+| PostgreSQL | `db` | `logibooks` | `postgres` | Existing Core development PostgreSQL password |
+| MS SQL | `mssql` | `reestr_1` | `logibooks` | `ALTA_DB_PASSWORD` in `.env` |
+
+Alta starts in CLI mode by default. Attach a terminal with `docker compose attach alta` and detach with Ctrl+P, Ctrl+Q. Set `ALTA_TEST_MONITORING=true` in `.env` and start the stack again to run background monitoring. To stop the stack and retain both databases, run `docker compose down`.
+
 ### Visual Studio Docker Compose project
 
-The `docker-compose.dcproj` project is included in `Logibooks.Alta.sln` and uses Visual Studio Container Tools. Its **Docker Compose** profile starts SQL Server and Adminer. **Docker Compose (Adminer)** also opens Adminer in the browser.
+Open `Logibooks.Alta.sln` with Visual Studio Container Tools and the .NET 10 SDK. Set `docker-compose` as the startup project, select **Logibooks (debug Alta)**, and press F5. The profile starts the full Compose stack and runs Alta with monitoring enabled under the debugger. The **Docker Compose** profile starts SQL Server and Adminer. **Docker Compose (Adminer)** also opens Adminer in the browser.
 
 After preparing the local configuration with the helper, start `Logibooks.Alta.Service` with the **Alta (Windows development)** profile to debug the Windows process. From PowerShell, use:
 

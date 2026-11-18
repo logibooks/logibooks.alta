@@ -8,7 +8,6 @@ using Logibooks.Alta.Configuration;
 using Logibooks.Alta.CoreApi;
 using Logibooks.Alta.Database;
 using Logibooks.Alta.Monitoring;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace Logibooks.Alta.Tests;
@@ -35,6 +34,42 @@ public sealed class ProbeWorkerTests
             Assert.That(coreProbe.Calls, Is.Zero);
             Assert.That(signal.Timeouts.Single(), Is.EqualTo(Timeout.InfiniteTimeSpan));
             Assert.That(logger.Entries.Any(entry => entry.Message.Contains("disabled", StringComparison.Ordinal)), Is.True);
+        });
+    }
+
+    [Test]
+    public async Task ExpiredScheduleIsRejectedBeforeStartupRunsAnyProbes()
+    {
+        var settings = new ServiceOptions { Enabled = true, MonitoringCron = "0 0 8 1 1 ? 2026", MonitoringTimeZone = "UTC" };
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 1, 1, 9, 0, 0, TimeSpan.Zero));
+        using var provider = new RuntimeConfigurationProvider(new TestOptionsMonitor<ServiceOptions>(settings),
+            new TestOptionsMonitor<CoreOptions>(ValidConfiguration(enabled: true).Core),
+            new TestOptionsMonitor<DatabaseMonitoringOptions>(new()
+            {
+                Targets = [new DatabaseTargetOptions { Enabled = true, Name = "Alta", ConnectionString = "Server=db" }]
+            }), new CoreUris(false));
+        var databaseProbe = new TestMssqlProbe();
+        var coreProbe = new TestCoreProbe();
+        var signal = new BlockingReloadSignal();
+        var logger = new ListLogger<ProbeWorker>();
+        using var worker = new ProbeWorker(provider, databaseProbe, coreProbe, signal, logger, clock: clock);
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await signal.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(databaseProbe.Calls, Is.Zero);
+            Assert.That(coreProbe.Calls, Is.Zero);
+            Assert.That(logger.Entries.Any(entry => entry.Level == LogLevel.Error &&
+                entry.Message.Contains("must schedule a future firing", StringComparison.Ordinal)), Is.True);
         });
     }
 
@@ -160,10 +195,9 @@ public sealed class ProbeWorkerTests
     }
 
     [Test]
-    public async Task ReloadDuringActiveProbe_IsRetainedForTheNextCycle()
+    public async Task ReloadDuringStartup_AppliesTheNewSchedule()
     {
-        var configurationRoot = new ConfigurationBuilder().AddInMemoryCollection().Build();
-        using var signal = new ConfigurationReloadSignal(configurationRoot);
+        using var signal = ConfigurationReloadSignalTests.CreateSignal(out var reload);
         var firstProbeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirstProbe = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondProbeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -189,12 +223,78 @@ public sealed class ProbeWorkerTests
 
         await worker.StartAsync(CancellationToken.None);
         await firstProbeStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        configurationRoot.Reload();
+        configuration.Service.MonitoringCron = "0/1 * * * * ?";
+        reload();
         releaseFirstProbe.TrySetResult();
-        await secondProbeStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await secondProbeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await worker.StopAsync(CancellationToken.None);
 
         Assert.That(databaseProbe.Calls, Is.GreaterThanOrEqualTo(2));
+    }
+
+    [Test]
+    public async Task ReloadSwitchesModesOnlyAfterThePreviousModeHasFinished()
+    {
+        using var signal = ConfigurationReloadSignalTests.CreateSignal(out var reload);
+        var disabled = ValidConfiguration(enabled: false);
+        var enabled = ValidConfiguration(enabled: true);
+        enabled.Core.Enabled = false;
+        var provider = new SequenceConfigurationProvider(disabled, enabled, disabled);
+        var probeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseProbe = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var databaseProbe = new TestMssqlProbe(async (_, token) =>
+        {
+            probeStarted.TrySetResult();
+            await releaseProbe.Task.WaitAsync(token);
+        });
+        var console = new SwitchingConsole();
+        using var worker = new ProbeWorker(provider, databaseProbe, new TestCoreProbe(), signal,
+            new ListLogger<ProbeWorker>(), console: console);
+        var deadline = TimeSpan.FromSeconds(3);
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await console.Entered.Task.WaitAsync(deadline);
+            reload();
+            await console.Cancelled.Task.WaitAsync(deadline);
+            Assert.That(probeStarted.Task.IsCompleted, Is.False);
+            console.FinishSubmission.TrySetResult();
+            await probeStarted.Task.WaitAsync(deadline);
+
+            reload();
+            Assert.That(console.Reopened.Task.IsCompleted, Is.False);
+            releaseProbe.TrySetResult();
+            await console.Reopened.Task.WaitAsync(deadline);
+            Assert.That(databaseProbe.Calls, Is.EqualTo(1));
+        }
+        finally
+        {
+            console.FinishSubmission.TrySetResult();
+            releaseProbe.TrySetResult();
+            await worker.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private sealed class SwitchingConsole : IAltaConsole
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FinishSubmission { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Reopened { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task RunAsync(CancellationToken modeToken, CancellationToken stoppingToken)
+        {
+            if (!Entered.TrySetResult())
+            {
+                Reopened.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, modeToken);
+                return;
+            }
+
+            using var registration = modeToken.Register(() => Cancelled.TrySetResult());
+            await FinishSubmission.Task.WaitAsync(stoppingToken);
+        }
     }
 
     private static ProbeWorker CreateWorker(
@@ -209,7 +309,7 @@ public sealed class ProbeWorkerTests
         bool enabled,
         int databaseCount = 1,
         int concurrency = 4) => new(
-        new ServiceOptions { Enabled = enabled, PollIntervalSeconds = 60 },
+        new ServiceOptions { Enabled = enabled },
         new CoreOptions
         {
             Enabled = true,
@@ -229,7 +329,7 @@ public sealed class ProbeWorkerTests
     private sealed class StaticConfigurationProvider(RuntimeConfiguration configuration)
         : IRuntimeConfigurationProvider
     {
-        public RuntimeConfiguration GetValidated() => configuration;
+        public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null) => configuration;
     }
 
     private sealed class SequenceConfigurationProvider(params RuntimeConfiguration[] configurations)
@@ -237,7 +337,7 @@ public sealed class ProbeWorkerTests
     {
         private int _index;
 
-        public RuntimeConfiguration GetValidated()
+        public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null)
         {
             var index = Math.Min(Interlocked.Increment(ref _index) - 1, configurations.Length - 1);
             return configurations[index];
@@ -342,16 +442,21 @@ public sealed class ProbeWorkerTests
 [TestFixture]
 public sealed class ConfigurationReloadSignalTests
 {
-    [Test]
-    public async Task WaitAsync_WakesWhenConfigurationReloads()
+    internal static ConfigurationReloadSignal CreateSignal(out Action reload)
     {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection()
-            .Build();
-        using var signal = new ConfigurationReloadSignal(configuration);
+        var options = new TestOptionsMonitor<ServiceOptions>(new());
+        reload = () => options.Set(new());
+        return new ConfigurationReloadSignal(options, new TestOptionsMonitor<CoreOptions>(new()),
+            new TestOptionsMonitor<DatabaseMonitoringOptions>(new()));
+    }
+
+    [Test]
+    public async Task WaitAsync_WakesWhenNewOptionsArePublished()
+    {
+        using var signal = CreateSignal(out var reload);
 
         var wait = signal.WaitAsync(Timeout.InfiniteTimeSpan, CancellationToken.None);
-        configuration.Reload();
+        reload();
 
         await wait.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.That(wait.IsCompletedSuccessfully, Is.True);
@@ -360,10 +465,9 @@ public sealed class ConfigurationReloadSignalTests
     [Test]
     public async Task ReloadBeforeWait_RemainsPendingUntilConsumed()
     {
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection().Build();
-        using var signal = new ConfigurationReloadSignal(configuration);
+        using var signal = CreateSignal(out var reload);
 
-        configuration.Reload();
+        reload();
         await signal.WaitAsync(TimeSpan.FromMinutes(1), CancellationToken.None)
             .WaitAsync(TimeSpan.FromSeconds(2));
     }

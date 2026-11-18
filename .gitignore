@@ -38,6 +38,8 @@ ScaffoldingReadMe.txt
 
 # dotenv environment variables file
 .env
+/.env.*
+!/.env.example
 appsettings.Development.local.json
 
 # Others
@@ -59,3 +61,5 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+.vscode

@@ -72,6 +72,11 @@ internal static class ProgramEntry
         else
         {
             builder.Logging.AddConsole();
+            if (!Console.IsInputRedirected && !Console.IsOutputRedirected)
+            {
+                builder.Services.AddSingleton<IAltaConsoleTerminal, AltaConsoleTerminal>();
+                builder.Services.AddSingleton<IAltaConsole, AltaConsole>();
+            }
         }
 
         builder.Services
@@ -92,12 +97,17 @@ internal static class ProgramEntry
         builder.Services.AddSingleton<ICoreSessionManager, CoreSessionManager>();
         builder.Services.AddTransient<JwtSessionHandler>();
         builder.Services.AddSingleton<ICoreApiProbe, CoreApiProbe>();
+        builder.Services.AddSingleton<AltaCoreClient>();
+        builder.Services.AddSingleton<IAltaSource, AltaSqlSource>();
+        builder.Services.AddSingleton<AltaMonitor>();
         builder.Services.AddHostedService<ProbeWorker>();
 
         builder.Services
-            .AddHttpClient(HttpClientNames.Authentication, client => client.Timeout = Timeout.InfiniteTimeSpan);
+            .AddHttpClient(HttpClientNames.Authentication, client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
         builder.Services
             .AddHttpClient(HttpClientNames.Api, client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
             .AddHttpMessageHandler<JwtSessionHandler>();
 
         return builder.Build();

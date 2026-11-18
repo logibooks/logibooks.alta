@@ -5,6 +5,7 @@
 using Logibooks.Alta.Configuration;
 using Logibooks.Alta.CoreApi;
 using Logibooks.Alta.Database;
+using Quartz;
 
 namespace Logibooks.Alta.Monitoring;
 
@@ -13,7 +14,10 @@ internal sealed class ProbeWorker(
     IMssqlProbe mssqlProbe,
     ICoreApiProbe coreApiProbe,
     IConfigurationReloadSignal reloadSignal,
-    ILogger<ProbeWorker> logger) : BackgroundService
+    ILogger<ProbeWorker> logger,
+    AltaMonitor? monitoring = null,
+    IAltaConsole? console = null,
+    TimeProvider? clock = null) : BackgroundService
 {
     private bool? _lastEnabledState;
 
@@ -24,15 +28,20 @@ internal sealed class ProbeWorker(
             ServiceConstants.DisplayName,
             VersionInfo.AppVersion);
 
+        var schedulingClock = clock ?? TimeProvider.System;
+        RuntimeConfiguration? previous = null;
         while (!stoppingToken.IsCancellationRequested)
         {
             RuntimeConfiguration configuration;
             try
             {
-                configuration = configurationProvider.GetValidated();
+                // Only schedule admission requires another firing; an active cycle can be the last one.
+                configuration = configurationProvider.GetValidated(allowDisabledConsole: console is not null,
+                    scheduleFrom: schedulingClock.GetUtcNow());
             }
             catch (RuntimeConfigurationException exception)
             {
+                previous = null;
                 logger.LogError("Configuration is invalid: {Errors}", string.Join("; ", exception.Errors));
                 await reloadSignal.WaitAsync(TimeSpan.FromSeconds(30), stoppingToken);
                 continue;
@@ -40,31 +49,78 @@ internal sealed class ProbeWorker(
 
             if (!configuration.Service.Enabled)
             {
+                previous = null;
+                monitoring?.Clear();
                 LogStateChange(false);
-                await reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, stoppingToken);
+                if (console is null)
+                    await reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, stoppingToken);
+                else
+                    await RunConsoleUntilReloadAsync(console, stoppingToken);
                 continue;
             }
 
             LogStateChange(true);
-            var cycleTasks = new List<Task>
+            if (previous is null || !AltaMonitor.SameRuntime(previous, configuration))
+                await RunCycleAsync(configuration, stoppingToken);
+
+            previous = configuration;
+            await using var schedule = new QuartzMonitoringSchedule(
+                schedulingClock, token => RunCycleAsync(configuration, token), stoppingToken);
+            try
             {
-                RunDatabaseProbesAsync(configuration, stoppingToken)
-            };
-            if (configuration.Core.Enabled)
-            {
-                cycleTasks.Add(RunProbeAsync(
-                    "Logibooks Core",
-                    coreApiProbe.ProbeAsync,
-                    configuration,
-                    stoppingToken));
+                await schedule.StartAsync(configuration.Service);
             }
-
-            await Task.WhenAll(cycleTasks);
-
-            await reloadSignal.WaitAsync(
-                TimeSpan.FromSeconds(configuration.Service.PollIntervalSeconds),
-                stoppingToken);
+            catch (SchedulerException exception)
+            {
+                logger.LogError("Could not schedule Alta monitoring: {Failure}",
+                    SensitiveDataSanitizer.Sanitize(exception.Message, configuration));
+                await reloadSignal.WaitAsync(TimeSpan.FromSeconds(30), stoppingToken);
+                continue;
+            }
+            await reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, stoppingToken);
         }
+    }
+
+    private async Task RunConsoleUntilReloadAsync(IAltaConsole interactiveConsole, CancellationToken stoppingToken)
+    {
+        using var mode = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var reload = reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, mode.Token);
+        var session = interactiveConsole.RunAsync(mode.Token, stoppingToken);
+        try
+        {
+            await Task.WhenAny(reload, session);
+        }
+        finally
+        {
+            await mode.CancelAsync();
+            try
+            {
+                await Task.WhenAll(reload, session);
+            }
+            catch (OperationCanceledException) when (mode.IsCancellationRequested)
+            {
+                // Reload or shutdown interrupted console input or a preflight read.
+            }
+        }
+    }
+
+    private async Task RunCycleAsync(RuntimeConfiguration configuration, CancellationToken token)
+    {
+        var checks = new List<Task>();
+        // A monitoring read provides its own database health check.
+        if (!configuration.Core.Enabled || monitoring is null)
+            checks.Add(RunDatabaseProbesAsync(configuration, token));
+
+        if (configuration.Core.Enabled)
+        {
+            checks.Add(RunProbeAsync("Logibooks Core", coreApiProbe.ProbeAsync, configuration, token));
+            if (monitoring is not null)
+                checks.Add(monitoring.RunAsync(configuration, token));
+        }
+        else
+            monitoring?.Clear();
+
+        await Task.WhenAll(checks);
     }
 
     private async Task RunDatabaseProbesAsync(

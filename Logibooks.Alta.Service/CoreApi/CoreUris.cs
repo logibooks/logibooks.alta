@@ -15,9 +15,13 @@ internal sealed class CoreUris(bool isDevelopment)
     public Uri Login(CoreOptions options) => Combine(options, "api/Auth/login");
     public Uri Check(CoreOptions options) => Combine(options, "api/Auth/check");
 
+    public Uri Worklist(CoreOptions options, string databaseName) => Alta(options, databaseName, "worklist");
+
+    public Uri SubmitDec(CoreOptions options, string databaseName) => Alta(options, databaseName, "parcel-change-batches");
+
     public Uri? GetAllowedBaseUri(string? baseUrl)
     {
-        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
+        if (!Uri.TryCreate(baseUrl?.Trim(), UriKind.Absolute, out var uri) || uri.UserInfo.Length != 0)
         {
             return null;
         }
@@ -27,6 +31,17 @@ internal sealed class CoreUris(bool isDevelopment)
                 string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
             ? uri
             : null;
+    }
+
+    private Uri Alta(CoreOptions options, string databaseName, string action)
+    {
+        if (string.IsNullOrWhiteSpace(databaseName) || databaseName is "." or ".." ||
+            databaseName.Contains('/') || databaseName.Contains('\\'))
+        {
+            throw new CoreConfigurationException("The database name must be a nonempty URL path segment.");
+        }
+
+        return Combine(options, $"api/alta/v1/databases/{Uri.EscapeDataString(databaseName)}/{action}");
     }
 
     private Uri Combine(CoreOptions options, string relativePath)
