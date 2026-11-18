@@ -69,7 +69,7 @@ internal sealed class AltaConsole(
                 lifetime.StopApplication();
                 return;
             }
-            catch (OperationCanceledException) when (modeToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (modeToken.IsCancellationRequested || stoppingToken.IsCancellationRequested)
             {
                 return;
             }
@@ -188,7 +188,8 @@ internal sealed class AltaConsole(
             if (item.Message is not null)
                 _lastSubmission += $" {item.Message}";
         }
-        catch (Exception ex) when (IsReadFailure(ex))
+        catch (Exception ex) when (IsReadFailure(ex) &&
+                                   (ex is not OperationCanceledException || !stoppingToken.IsCancellationRequested))
         {
             _lastSubmission = $"{database} / {cmr}: {AltaCoreClient.DescribeReadFailure(ex)}";
         }

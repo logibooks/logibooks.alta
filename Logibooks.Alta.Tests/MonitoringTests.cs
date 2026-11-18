@@ -31,15 +31,22 @@ public sealed class MonitoringTests
             .First(target => target.GetProperty("Name").GetString() == "reestr_1");
         var target = new RuntimeDatabaseTarget("reestr_1", database.GetProperty("ConnectionString").GetString()!);
         var start = Stopwatch.StartNew();
-        var result = await new AltaSqlSource().ReadAsync(target, [cmr!], new HashSet<string>(StringComparer.Ordinal) { cmr! },
-            new Dictionary<string, AltaRegisterSnapshot>(), registers => registers.Single().Parcels.Values
-                .Where(parcel => AltaSourceValues.ReadDeclarationReference(parcel.DeclarationReference) is { } id &&
-                    registers.Single().Declarations.TryGetValue(id, out var declaration) &&
-                    declaration.Shipments?.TryGetValue(parcel.Id, out var shipment) == true && shipment?.Number == parcel.Number)
-                .GroupBy(parcel => parcel.Number, StringComparer.Ordinal)
-                .Select(group => new AltaGoodsRequest(new AltaGoodsKey(cmr!, group.Key),
-                    group.Select(parcel => parcel.Id).ToHashSet())).ToArray(),
-            CancellationToken.None);
+        var source = new AltaSqlSource();
+        var worklist = new HashSet<string>(StringComparer.Ordinal) { cmr! };
+        var result = await source.ReadAsync(target, [cmr!], worklist, registers =>
+        {
+            var register = registers.Single();
+            return register.Parcels.Values.GroupBy(parcel => parcel.Number, StringComparer.Ordinal)
+                .Select(group => (Number: group.Key, Linked: group
+                    .Select(parcel => (Parcel: parcel, DeclarationId: AltaSourceValues.ReadDeclarationReference(parcel.DeclarationReference)))
+                    .Where(link => link.DeclarationId is { } id && register.Declarations.ContainsKey(id))
+                    .ToArray()))
+                .Where(group => group.Number.Length > 0 && group.Linked.Length > 0 &&
+                    group.Linked.All(link => link.DeclarationId == group.Linked[0].DeclarationId))
+                .Select(group => new AltaAssignmentRequest(new AltaGoodsKey(cmr!, group.Number),
+                    group.Linked[0].DeclarationId!.Value, group.Linked.Select(link => link.Parcel.Id).ToHashSet()))
+                .ToArray();
+        }, CancellationToken.None);
 
         var snapshot = result.Registers.Single();
         TestContext.WriteLine($"Read {snapshot.Declarations.Count} DECs and {snapshot.Parcels.Count} IndPost rows in {start.Elapsed.TotalSeconds:F1}s.");
@@ -48,7 +55,12 @@ public sealed class MonitoringTests
             TestContext.WriteLine($"{failure.Count()} deferred: {failure.Key}");
         Assert.That(snapshot.Declarations, Is.Not.Empty);
         Assert.That(snapshot.Parcels, Is.Not.Empty);
+        Assert.That(result.Shipments.Values.Sum(shipments => shipments.Count), Is.Positive);
         Assert.That(result.Goods.Values.Any(goods => goods.Items is { Count: > 0 }), Is.True);
+
+        var idle = await source.ReadAsync(target, [cmr!], worklist, _ => [], CancellationToken.None);
+        Assert.That(idle.Shipments, Is.Empty);
+        Assert.That(idle.Goods, Is.Empty);
     }
 
     [Test]
@@ -78,6 +90,50 @@ public sealed class MonitoringTests
         monitor.Put(Snapshot("CMR-1", first with { Decision = "90" }, unchanged, newDec), Snapshot("CMR-2", second));
         await monitor.PollAsync();
         Assert.That(monitor.Submissions.Last().Assignments.Single().ParcelNumber, Is.EqualTo("0004"));
+    }
+
+    [Test]
+    public async Task ExistingDecAndXmlChangesAloneDoNotQueueWork()
+    {
+        using var monitor = new MonitoringFixture();
+        var parcel = Parcel("0001");
+        var snapshot = Snapshot("CMR-1", parcel);
+        monitor.Put(snapshot);
+        await monitor.PollAsync();
+
+        var payments = new[] { new AltaPayment("customsFee", 12m, "RUB") };
+        monitor.Source.Payments = payments;
+        var editedDec = snapshot.Declarations[MainDec] with { Code = "edited" };
+        var editedSnapshot = snapshot with { Declarations = new Dictionary<Guid, AltaDeclaration> { [MainDec] = editedDec } };
+        monitor.Put(editedSnapshot);
+        await monitor.PollAsync();
+        Assert.That(monitor.Source.Lookups, Has.Count.EqualTo(1));
+        Assert.That(monitor.Submissions, Has.Count.EqualTo(1));
+
+        monitor.Put(editedSnapshot with
+        {
+            Parcels = new Dictionary<Guid, AltaParcel> { [parcel.Id] = parcel with { WeightKg = 2m } }
+        });
+        await monitor.PollAsync();
+        var assignment = monitor.Submissions.Last().Assignments.Single();
+        Assert.That(monitor.Submissions, Has.Count.EqualTo(2));
+        Assert.That(assignment.Payments, Is.EqualTo(payments));
+        Assert.That(assignment.WeightKg, Is.EqualTo(2m));
+    }
+
+    [Test]
+    public async Task ArrivalOfDecQueuesAnAlreadyKnownIndPostRow()
+    {
+        using var monitor = new MonitoringFixture();
+        var snapshot = Snapshot("CMR-1", Parcel("0001"));
+        monitor.Put(snapshot with { Declarations = new Dictionary<Guid, AltaDeclaration>() });
+        await monitor.PollAsync();
+        Assert.That(monitor.Source.Lookups, Is.Empty);
+        Assert.That(monitor.Submissions, Is.Empty);
+
+        monitor.Put(snapshot);
+        await monitor.PollAsync();
+        Assert.That(monitor.Submissions.Single().Assignments.Single().ParcelNumber, Is.EqualTo("0001"));
     }
 
     [Test]
@@ -409,9 +465,7 @@ public sealed class MonitoringTests
     {
         var declarations = parcels.Where(parcel => AltaSourceValues.ReadDeclarationReference(parcel.DeclarationReference) is not null)
             .GroupBy(parcel => AltaSourceValues.ReadDeclarationReference(parcel.DeclarationReference)!.Value)
-            .ToDictionary(group => group.Key, group => new AltaDeclaration(group.Key, group.Key.ToString("N"), "10", "1", null, null,
-                group.ToDictionary(parcel => parcel.Id,
-                    parcel => (AltaShipment?)new AltaShipment(parcel.Number, null, [], null))));
+            .ToDictionary(group => group.Key, group => new AltaDeclaration(group.Key, group.Key.ToString("N"), "10", null, null));
         return new AltaRegisterSnapshot(cmr, declarations, parcels.ToDictionary(parcel => parcel.Id));
     }
 
@@ -500,23 +554,29 @@ public sealed class MonitoringTests
         public Action? AfterRead { get; set; }
         public string? Missing { get; set; }
         public string Description { get; set; } = "Original goods";
+        public IReadOnlyList<AltaPayment> Payments { get; set; } = [];
 
         public Task<AltaSourceRead> ReadAsync(RuntimeDatabaseTarget target, IReadOnlyList<string> cmrs, IReadOnlySet<string> worklist,
-            IReadOnlyDictionary<string, AltaRegisterSnapshot> previous,
-            Func<IReadOnlyList<AltaRegisterSnapshot>, IReadOnlyCollection<AltaGoodsRequest>> selectGoods, CancellationToken token)
+            Func<IReadOnlyList<AltaRegisterSnapshot>, IReadOnlyCollection<AltaAssignmentRequest>> selectAssignments,
+            CancellationToken token)
         {
             GroupSizes.Add(cmrs.Count);
             WorklistSizes.Add(worklist.Count);
             if (cmrs.Count > MaxRegistersPerRead)
                 throw new TimeoutException();
             var snapshots = cmrs.Select(cmr => Snapshots[cmr]).ToArray();
-            var goodsRequests = selectGoods(snapshots);
+            var goodsRequests = selectAssignments(snapshots);
             if (goodsRequests.Count > 0)
                 Lookups.Add(goodsRequests.Select(item => item.Key.ParcelNumber).Distinct(StringComparer.Ordinal).ToArray());
             var goods = goodsRequests.Where(item => item.Key.ParcelNumber != Missing)
                 .ToDictionary(item => item.Key, _ => new AltaGoodsLookup([new(Description, null, 1, 0)]));
+            var shipments = goodsRequests.GroupBy(request => request.DeclarationId).ToDictionary(group => group.Key,
+                group => (IReadOnlyDictionary<Guid, AltaShipment?>)group
+                    .SelectMany(request => request.IndPostIds.Select(id => Snapshots[request.Key.Cmr].Parcels[id]))
+                    .DistinctBy(parcel => parcel.Id)
+                    .ToDictionary(parcel => parcel.Id, parcel => (AltaShipment?)new AltaShipment(parcel.Number, null, Payments, null)));
             AfterRead?.Invoke();
-            return Task.FromResult(new AltaSourceRead(snapshots, goods));
+            return Task.FromResult(new AltaSourceRead(snapshots, goods, shipments));
         }
     }
 }

@@ -106,8 +106,9 @@ internal sealed class AltaCoreClient(
             }
             throw;
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or OperationCanceledException or
-                                       CoreRequestException { StatusCode: >= HttpStatusCode.InternalServerError })
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or
+                                       CoreRequestException { StatusCode: >= HttpStatusCode.InternalServerError } ||
+                                   ex is OperationCanceledException && !token.IsCancellationRequested)
         {
             throw new AltaOutcomeUnknownException(ex);
         }

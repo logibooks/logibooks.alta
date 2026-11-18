@@ -84,18 +84,60 @@ public sealed class AltaIntegrationTests
     [TestCase("lost")]
     [TestCase("invalid")]
     [TestCase("unknown")]
+    [TestCase("request cancelled")]
     public void UnknownSubmissionDoesNotRetry(string failure)
     {
         using var handler = new RecordingHttpHandler((_, _, _) => failure switch
         {
             "lost" => Task.FromException<HttpResponseMessage>(new HttpRequestException("Connection lost")),
             "invalid" => Task.FromResult(Reply("{}")),
+            "request cancelled" => Task.FromException<HttpResponseMessage>(new OperationCanceledException()),
             _ => Task.FromResult(Reply("""{"code":"AltaOutcomeUnknown"}""", HttpStatusCode.InternalServerError))
         });
         var client = CreateClient(handler);
         Assert.That(async () => await client.SubmitAsync(client.CaptureConfiguration(), "Alta", Batch(), CancellationToken.None),
             Throws.TypeOf<AltaOutcomeUnknownException>());
         Assert.That(handler.Calls, Is.EqualTo(1));
+    }
+
+    [Test]
+    public void CallerCancellationStopsSubmission()
+    {
+        using var stopping = new CancellationTokenSource();
+        using var handler = new RecordingHttpHandler((_, _, token) =>
+        {
+            stopping.Cancel();
+            return Task.FromCanceled<HttpResponseMessage>(token);
+        });
+        var client = CreateClient(handler);
+
+        Assert.That(async () => await client.SubmitAsync(client.CaptureConfiguration(), "Alta", Batch(), stopping.Token),
+            Throws.InstanceOf<OperationCanceledException>());
+        Assert.That(handler.Calls, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task ConsoleStopsCleanlyWhenShutdownCancelsSubmission()
+    {
+        using var lifetime = new TestLifetime();
+        using var handler = new RecordingHttpHandler((request, _, token) =>
+        {
+            if (request.Method == HttpMethod.Get)
+                return Task.FromResult(Reply("""{"cmrs":["CMR-1"]}"""));
+            lifetime.StopApplication();
+            return Task.FromCanceled<HttpResponseMessage>(token);
+        });
+        var terminal = new ScriptedTerminal("submit", "Alta", "CMR-1", "DEC-1", "00042", "10", "40", "",
+            "", "", "First item", "", "1", "10.00", "", "y");
+        var console = new AltaConsole(terminal, CreateClient(handler), new UnusedProbe(),
+            new TestOptionsMonitor<DatabaseMonitoringOptions>(new() { Targets = [new() { Name = "Alta" }] }),
+            new TestOptionsMonitor<ServiceOptions>(new()), lifetime);
+
+        await console.RunAsync(CancellationToken.None, lifetime.ApplicationStopping);
+
+        Assert.That(handler.Requests.Count(request => request.Method == HttpMethod.Post), Is.EqualTo(1));
+        Assert.That(terminal.Output, Has.None.Contains("timed out"));
+        Assert.That(terminal.Output, Has.None.Contains("outcome is unknown"));
     }
 
     [Test]

@@ -12,9 +12,7 @@ using Microsoft.Data.SqlClient;
 
 namespace Logibooks.Alta.Database;
 
-internal sealed record AltaDeclaration(
-    Guid Id, string? Code, string? Procedure, string? Version, string? Status, int? ElectronicStatus,
-    IReadOnlyDictionary<Guid, AltaShipment?>? Shipments = null);
+internal sealed record AltaDeclaration(Guid Id, string? Code, string? Procedure, string? Status, int? ElectronicStatus);
 
 internal sealed record AltaParcel(
     Guid Id, string Number, string? DeclarationReference, string? Decision, decimal? WeightKg);
@@ -26,16 +24,17 @@ internal sealed record AltaGoodsLookup(IReadOnlyList<AltaGoods>? Items, string? 
 
 internal readonly record struct AltaGoodsKey(string Cmr, string ParcelNumber);
 
-internal sealed record AltaGoodsRequest(AltaGoodsKey Key, IReadOnlySet<Guid> IndPostIds);
+internal sealed record AltaAssignmentRequest(AltaGoodsKey Key, Guid DeclarationId, IReadOnlySet<Guid> IndPostIds);
 
 internal sealed record AltaSourceRead(
-    IReadOnlyList<AltaRegisterSnapshot> Registers, IReadOnlyDictionary<AltaGoodsKey, AltaGoodsLookup> Goods);
+    IReadOnlyList<AltaRegisterSnapshot> Registers, IReadOnlyDictionary<AltaGoodsKey, AltaGoodsLookup> Goods,
+    IReadOnlyDictionary<Guid, IReadOnlyDictionary<Guid, AltaShipment?>> Shipments);
 
 internal interface IAltaSource
 {
     Task<AltaSourceRead> ReadAsync(RuntimeDatabaseTarget target, IReadOnlyList<string> cmrs, IReadOnlySet<string> worklist,
-        IReadOnlyDictionary<string, AltaRegisterSnapshot> previous,
-        Func<IReadOnlyList<AltaRegisterSnapshot>, IReadOnlyCollection<AltaGoodsRequest>> selectGoods, CancellationToken token);
+        Func<IReadOnlyList<AltaRegisterSnapshot>, IReadOnlyCollection<AltaAssignmentRequest>> selectAssignments,
+        CancellationToken token);
 }
 
 internal sealed class AltaSqlSource : IAltaSource
@@ -47,8 +46,7 @@ internal sealed class AltaSqlSource : IAltaSource
     private static readonly string[] GoodsFields = ["GOODSDESCRIPTION", "GOODSCODE", "GOODSQUANTITY", "TOTALCOST"];
 
     private const string SnapshotSql = """
-        SELECT e.AviaNum, e.DOCGID, e.RegNum, d.REGNUM, e.CustomsModeCode,
-               CONVERT(varchar(16), d.[Timestamp], 2), d.STATUS, d.EDSTAT
+        SELECT e.AviaNum, e.DOCGID, e.RegNum, d.REGNUM, e.CustomsModeCode, d.STATUS, d.EDSTAT
         FROM dbo.ExpressCargoDeclarationList AS e
         LEFT JOIN dbo.Docs AS d ON d.GID = e.DOCGID
         WHERE EXISTS (
@@ -66,8 +64,8 @@ internal sealed class AltaSqlSource : IAltaSource
 
     public async Task<AltaSourceRead> ReadAsync(RuntimeDatabaseTarget target, IReadOnlyList<string> cmrs,
         IReadOnlySet<string> worklist,
-        IReadOnlyDictionary<string, AltaRegisterSnapshot> previous,
-        Func<IReadOnlyList<AltaRegisterSnapshot>, IReadOnlyCollection<AltaGoodsRequest>> selectGoods, CancellationToken token)
+        Func<IReadOnlyList<AltaRegisterSnapshot>, IReadOnlyCollection<AltaAssignmentRequest>> selectAssignments,
+        CancellationToken token)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
         deadline.CancelAfter(TimeSpan.FromSeconds(cmrs.Count == 1 ? SingleRegisterTimeoutSeconds : GroupTimeoutSeconds));
@@ -85,14 +83,17 @@ internal sealed class AltaSqlSource : IAltaSource
             state is byte and 1 ? IsolationLevel.Snapshot : IsolationLevel.Serializable, readToken);
 
         var rows = await ReadRegistersAsync(transaction, cmrs, readToken);
-        await ReadDeclarationDetailsAsync(transaction, rows, previous, readToken);
         var registers = rows.Select(row => new AltaRegisterSnapshot(row.Cmr, row.Declarations, row.Parcels)).ToArray();
-        var requests = selectGoods(registers);
-        var goods = requests.Count == 0
+        // Select submissions from the table snapshots first. DEC XML and E2IList are payload data read on demand.
+        var requests = selectAssignments(registers);
+        var shipments = await ReadDeclarationDetailsAsync(transaction,
+            requests.Select(request => request.DeclarationId).Distinct().ToArray(), readToken);
+        var goodsRequests = requests.Where(request => shipments.ContainsKey(request.DeclarationId)).ToArray();
+        var goods = goodsRequests.Length == 0
             ? new Dictionary<AltaGoodsKey, AltaGoodsLookup>()
-            : await ReadGoodsAsync(transaction, worklist, requests, readToken);
+            : await ReadGoodsAsync(transaction, worklist, goodsRequests, readToken);
         await transaction.CommitAsync(readToken);
-        return new AltaSourceRead(registers, goods);
+        return new AltaSourceRead(registers, goods, shipments);
     }
 
     private static async Task<RegisterRows[]> ReadRegistersAsync(SqlTransaction transaction,
@@ -110,8 +111,8 @@ internal sealed class AltaSqlSource : IAltaSource
                 continue;
             var id = reader.GetGuid(1);
             rows.Add(id, new AltaDeclaration(id, FirstText(ReadText(reader, 2), ReadText(reader, 3)),
-                ReadText(reader, 4)?.Trim(), ReadText(reader, 5)?.Trim(), ReadText(reader, 6),
-                reader.IsDBNull(7) ? null : reader.GetInt32(7)));
+                ReadText(reader, 4)?.Trim(), ReadText(reader, 5),
+                reader.IsDBNull(6) ? null : reader.GetInt32(6)));
         }
 
         await reader.NextResultAsync(token);
@@ -128,32 +129,12 @@ internal sealed class AltaSqlSource : IAltaSource
         return cmrs.Select(cmr => new RegisterRows(cmr, declarations[cmr], parcels[cmr])).ToArray();
     }
 
-    private static async Task ReadDeclarationDetailsAsync(SqlTransaction transaction, IReadOnlyList<RegisterRows> registers,
-        IReadOnlyDictionary<string, AltaRegisterSnapshot> previous, CancellationToken token)
+    private static async Task<Dictionary<Guid, IReadOnlyDictionary<Guid, AltaShipment?>>> ReadDeclarationDetailsAsync(
+        SqlTransaction transaction, IReadOnlyCollection<Guid> declarationIds, CancellationToken token)
     {
-        var pending = new Dictionary<Guid, RegisterRows>();
-        foreach (var register in registers)
-        {
-            previous.TryGetValue(register.Cmr, out var baseline);
-            foreach (var parcel in register.Parcels.Values)
-            {
-                if (string.IsNullOrWhiteSpace(parcel.Decision) ||
-                    AltaSourceValues.ReadDeclarationReference(parcel.DeclarationReference) is not { } id ||
-                    !register.Declarations.TryGetValue(id, out var dec) ||
-                    dec.Code is null || dec.Version is null || dec.Shipments is not null)
-                    continue;
-
-                // The XML and its rowversion are on the same Docs row. The table projections are read on every poll.
-                if (baseline is not null && baseline.Declarations.TryGetValue(id, out var old) &&
-                    old.Version == dec.Version && old.Shipments is not null)
-                    register.Declarations[id] = dec with { Shipments = old.Shipments };
-                else
-                    pending.TryAdd(id, register);
-            }
-        }
-
-        if (pending.Count == 0)
-            return;
+        var shipments = new Dictionary<Guid, IReadOnlyDictionary<Guid, AltaShipment?>>();
+        if (declarationIds.Count == 0)
+            return shipments;
 
         await using var command = CreateCommand(transaction, """
             SELECT d.GID, d.BLOB
@@ -161,30 +142,29 @@ internal sealed class AltaSqlSource : IAltaSource
             JOIN dbo.Docs AS d ON d.GID = TRY_CONVERT(uniqueidentifier, k.[value])
             WHERE d.DOCTYP = 'ExpressCargoDeclaration';
             """);
-        command.Parameters.Add("@ids", SqlDbType.NVarChar, -1).Value = JsonSerializer.Serialize(pending.Keys);
+        command.Parameters.Add("@ids", SqlDbType.NVarChar, -1).Value = JsonSerializer.Serialize(declarationIds);
         await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, token);
         while (await reader.ReadAsync(token))
         {
             var id = reader.GetGuid(0);
-            var register = pending[id];
-            var dec = register.Declarations[id];
             if (await reader.IsDBNullAsync(1, token))
                 continue;
 
             try
             {
                 await using var stream = reader.GetStream(1);
-                register.Declarations[id] = dec with { Shipments = await AltaDeclarationDocument.ReadAsync(stream, token) };
+                shipments.Add(id, await AltaDeclarationDocument.ReadAsync(stream, token));
             }
             catch (XmlException)
             {
                 // Missing or invalid shipment details defer just the linked parcel numbers.
             }
         }
+        return shipments;
     }
 
     private static async Task<Dictionary<AltaGoodsKey, AltaGoodsLookup>> ReadGoodsAsync(SqlTransaction transaction,
-        IReadOnlySet<string> worklist, IReadOnlyCollection<AltaGoodsRequest> requests, CancellationToken token)
+        IReadOnlySet<string> worklist, IReadOnlyCollection<AltaAssignmentRequest> requests, CancellationToken token)
     {
         var slots = await ReadGoodsSlotsAsync(transaction, token);
         var values = string.Join(",\n", slots.Select(slot =>

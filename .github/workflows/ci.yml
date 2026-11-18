@@ -66,6 +66,7 @@ jobs:
           --no-restore
           --collect:"XPlat Code Coverage"
 
+      # CI builds the installer only to validate the build and smoke-test installation.
       - name: Build Windows setup EXE
         shell: pwsh
         run: .\scripts\Build-Installer.ps1 -Configuration Release
@@ -108,10 +109,3 @@ jobs:
           }
           if (Get-Service -Name LogibooksAltaAdapter -ErrorAction SilentlyContinue) { throw 'Uninstall left the service registered.' }
           if ((Get-FileHash -LiteralPath $config).Hash -ne $configHash) { throw 'Uninstall changed the configuration.' }
-
-      - name: Upload Windows setup EXE
-        uses: actions/upload-artifact@v6
-        with:
-          name: Logibooks.Alta.Setup
-          path: Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe
-          if-no-files-found: error
