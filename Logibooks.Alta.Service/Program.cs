@@ -128,12 +128,9 @@ internal static class ProgramEntry
 #pragma warning restore CS0618
         });
         logging.Services
-            .Configure<SimpleConsoleFormatterOptions>(ConsoleFormatterNames.Simple,
-                options => options.TimestampFormat ??= textTimestampFormat)
-            .Configure<ConsoleFormatterOptions>(ConsoleFormatterNames.Systemd,
-                options => options.TimestampFormat ??= textTimestampFormat)
-            .Configure<JsonConsoleFormatterOptions>(ConsoleFormatterNames.Json,
-                options => options.TimestampFormat ??= "G");
+            .Configure<SimpleConsoleFormatterOptions>(options => options.TimestampFormat ??= textTimestampFormat)
+            .Configure<ConsoleFormatterOptions>(options => options.TimestampFormat ??= textTimestampFormat)
+            .Configure<JsonConsoleFormatterOptions>(options => options.TimestampFormat ??= "G");
     }
 
     private static async Task<int> RunInstallerCommandAsync(string command)

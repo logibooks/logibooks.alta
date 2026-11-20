@@ -98,15 +98,15 @@ public sealed class HostConstructionTests
                 {
                     Assert.That(
                         host.Services.GetRequiredService<IOptionsMonitor<SimpleConsoleFormatterOptions>>()
-                            .Get(ConsoleFormatterNames.Simple).TimestampFormat,
+                            .CurrentValue.TimestampFormat,
                         Is.EqualTo(expectedTextTimestampFormat));
                     Assert.That(
                         host.Services.GetRequiredService<IOptionsMonitor<ConsoleFormatterOptions>>()
-                            .Get(ConsoleFormatterNames.Systemd).TimestampFormat,
+                            .CurrentValue.TimestampFormat,
                         Is.EqualTo(expectedTextTimestampFormat));
                     Assert.That(
                         host.Services.GetRequiredService<IOptionsMonitor<JsonConsoleFormatterOptions>>()
-                            .Get(ConsoleFormatterNames.Json).TimestampFormat,
+                            .CurrentValue.TimestampFormat,
                         Is.EqualTo("G"));
                 });
             }
