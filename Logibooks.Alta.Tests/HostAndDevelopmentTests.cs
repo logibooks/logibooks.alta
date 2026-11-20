@@ -5,6 +5,9 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
+using Microsoft.Extensions.Options;
+using System.Globalization;
 using System.Text.Json;
 using System.Xml.Linq;
 
@@ -55,6 +58,73 @@ public sealed class HostConstructionTests
             Environment.SetEnvironmentVariable(
                 Configuration.ConfigurationPaths.ConfigurationPathEnvironmentVariable,
                 originalPath);
+            Directory.Delete(configurationDirectory, recursive: true);
+        }
+    }
+
+    [Test]
+    public void BuildHost_ConfiguresCultureAwareConsoleAndRollingFileTimestamps()
+    {
+        var configurationDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"logibooks-alta-host-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(configurationDirectory);
+        var configurationPath = Path.Combine(configurationDirectory, "appsettings.json");
+        File.WriteAllText(configurationPath, """
+            {
+              "Logging": { "File": { "Enabled": true, "Directory": "logs" } },
+              "Service": { "Enabled": false, "MonitoringCron": "0 0 8-20/2 * * ?" },
+              "Databases": { "MaxConcurrentProbes": 4, "Targets": [] },
+              "Core": { "Enabled": true, "RequestTimeoutSeconds": 30, "JwtRefreshSkewMinutes": 5 }
+            }
+            """);
+        var configurationVariable = Configuration.ConfigurationPaths.ConfigurationPathEnvironmentVariable;
+        var originalPath = Environment.GetEnvironmentVariable(configurationVariable);
+        var originalCulture = CultureInfo.CurrentCulture;
+        var culture = CultureInfo.GetCultureInfo("en-GB");
+        var expectedTextTimestampFormat =
+            $"[{culture.DateTimeFormat.ShortDatePattern} {culture.DateTimeFormat.LongTimePattern}] ";
+
+        try
+        {
+            Environment.SetEnvironmentVariable(configurationVariable, configurationPath);
+            CultureInfo.CurrentCulture = culture;
+            using (var host = ProgramEntry.BuildHost([]))
+            {
+                var loggerFactory = host.Services.GetRequiredService<ILoggerFactory>();
+                loggerFactory.CreateLogger<HostConstructionTests>().LogInformation("timestamp format test");
+
+                Assert.Multiple(() =>
+                {
+                    Assert.That(
+                        host.Services.GetRequiredService<IOptionsMonitor<SimpleConsoleFormatterOptions>>()
+                            .Get(ConsoleFormatterNames.Simple).TimestampFormat,
+                        Is.EqualTo(expectedTextTimestampFormat));
+                    Assert.That(
+                        host.Services.GetRequiredService<IOptionsMonitor<ConsoleFormatterOptions>>()
+                            .Get(ConsoleFormatterNames.Systemd).TimestampFormat,
+                        Is.EqualTo(expectedTextTimestampFormat));
+                    Assert.That(
+                        host.Services.GetRequiredService<IOptionsMonitor<JsonConsoleFormatterOptions>>()
+                            .Get(ConsoleFormatterNames.Json).TimestampFormat,
+                        Is.EqualTo("G"));
+                });
+            }
+
+            var logFile = Directory.GetFiles(Path.Combine(configurationDirectory, "logs"), "alta-*.log")
+                .Single();
+            var logEntry = File.ReadAllText(logFile);
+            var levelIndex = logEntry.IndexOf(" [INF]", StringComparison.Ordinal);
+            Assert.That(levelIndex, Is.GreaterThan(0));
+            Assert.That(
+                DateTime.TryParseExact(logEntry[..levelIndex], "G", culture, DateTimeStyles.None, out _),
+                Is.True);
+            Assert.That(logEntry, Does.Contain("timestamp format test"));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+            Environment.SetEnvironmentVariable(configurationVariable, originalPath);
             Directory.Delete(configurationDirectory, recursive: true);
         }
     }

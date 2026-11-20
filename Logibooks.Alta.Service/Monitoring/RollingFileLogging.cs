@@ -4,6 +4,7 @@
 
 using Serilog;
 using Serilog.Extensions.Logging;
+using System.Globalization;
 
 namespace Logibooks.Alta.Monitoring;
 
@@ -27,6 +28,8 @@ internal static class RollingFileLogging
                 .MinimumLevel.Verbose()
                 .WriteTo.File(
                     path,
+                    outputTemplate: "{Timestamp:G} [{Level:u3}] {Message:lj}{NewLine}{Exception}",
+                    formatProvider: CultureInfo.CurrentCulture,
                     rollingInterval: RollingInterval.Day,
                     fileSizeLimitBytes: 10 * 1024 * 1024,
                     rollOnFileSizeLimit: true,

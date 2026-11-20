@@ -9,7 +9,9 @@ using Logibooks.Alta.Database;
 using Logibooks.Alta.Installation;
 using Logibooks.Alta.Monitoring;
 using Microsoft.Extensions.Hosting.WindowsServices;
+using Microsoft.Extensions.Logging.Console;
 using Microsoft.Extensions.Logging.EventLog;
+using System.Globalization;
 
 return await ProgramEntry.RunAsync(args);
 
@@ -56,9 +58,9 @@ internal static class ProgramEntry
         builder.Configuration.AddEnvironmentVariables();
         builder.Logging
             .ClearProviders()
-            .AddDebug()
             .AddEventSourceLogger()
             .AddRollingFile(builder.Configuration, Path.GetDirectoryName(configurationPath)!);
+        builder.Services.AddSingleton<ILoggerProvider, LocalTimeDebugLoggerProvider>();
 
         if (OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService())
         {
@@ -71,7 +73,7 @@ internal static class ProgramEntry
         }
         else
         {
-            builder.Logging.AddConsole();
+            AddConsoleLogging(builder.Logging);
             if (!Console.IsInputRedirected && !Console.IsOutputRedirected)
             {
                 builder.Services.AddSingleton<IAltaConsoleTerminal, AltaConsoleTerminal>();
@@ -111,6 +113,27 @@ internal static class ProgramEntry
             .AddHttpMessageHandler<JwtSessionHandler>();
 
         return builder.Build();
+    }
+
+    private static void AddConsoleLogging(ILoggingBuilder logging)
+    {
+        var dateTimeFormat = CultureInfo.CurrentCulture.DateTimeFormat;
+        var textTimestampFormat = $"[{dateTimeFormat.ShortDatePattern} {dateTimeFormat.LongTimePattern}] ";
+
+        logging.AddConsole(options =>
+        {
+            // The console provider reads these legacy options when FormatterName is absent.
+#pragma warning disable CS0618
+            options.TimestampFormat ??= textTimestampFormat;
+#pragma warning restore CS0618
+        });
+        logging.Services
+            .Configure<SimpleConsoleFormatterOptions>(ConsoleFormatterNames.Simple,
+                options => options.TimestampFormat ??= textTimestampFormat)
+            .Configure<ConsoleFormatterOptions>(ConsoleFormatterNames.Systemd,
+                options => options.TimestampFormat ??= textTimestampFormat)
+            .Configure<JsonConsoleFormatterOptions>(ConsoleFormatterNames.Json,
+                options => options.TimestampFormat ??= "G");
     }
 
     private static async Task<int> RunInstallerCommandAsync(string command)
