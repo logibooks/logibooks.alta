@@ -19,12 +19,12 @@ namespace Logibooks.Alta.Tests;
 public sealed class MonitoringTests
 {
     [Test]
-    public async Task RestoredAltaDatabaseResolvesScopedDeclarationsAndGoods()
+    public async Task RestoredAltaDatabaseResolvesGoodsForEveryRequestedShipment()
     {
         var path = Environment.GetEnvironmentVariable("LOGIBOOKS_ALTA_SQL_TEST_CONFIG");
         var cmr = Environment.GetEnvironmentVariable("LOGIBOOKS_ALTA_SQL_TEST_CMR");
         if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(cmr))
-            Assert.Ignore("Set LOGIBOOKS_ALTA_SQL_TEST_CONFIG and LOGIBOOKS_ALTA_SQL_TEST_CMR for the restored SQL sample.");
+            Assert.Ignore("Set LOGIBOOKS_ALTA_SQL_TEST_CONFIG and LOGIBOOKS_ALTA_SQL_TEST_CMR for a restored SQL sample with complete declaration goods.");
 
         using var settings = JsonDocument.Parse(await File.ReadAllTextAsync(path!));
         var database = settings.RootElement.GetProperty("Databases").GetProperty("Targets").EnumerateArray()
@@ -32,35 +32,40 @@ public sealed class MonitoringTests
         var target = new RuntimeDatabaseTarget("reestr_1", database.GetProperty("ConnectionString").GetString()!);
         var start = Stopwatch.StartNew();
         var source = new AltaSqlSource();
-        var worklist = new HashSet<string>(StringComparer.Ordinal) { cmr! };
-        var result = await source.ReadAsync(target, [cmr!], worklist, registers =>
+        var requested = new Dictionary<Guid, HashSet<Guid>>();
+        var result = await source.ReadAsync(target, [cmr!], registers =>
         {
             var register = registers.Single();
-            return register.Parcels.Values.GroupBy(parcel => parcel.Number, StringComparer.Ordinal)
+            requested = register.Parcels.Values.GroupBy(parcel => parcel.Number, StringComparer.Ordinal)
                 .Select(group => (Number: group.Key, Linked: group
                     .Select(parcel => (Parcel: parcel, DeclarationId: AltaSourceValues.ReadDeclarationReference(parcel.DeclarationReference)))
                     .Where(link => link.DeclarationId is { } id && register.Declarations.ContainsKey(id))
                     .ToArray()))
                 .Where(group => group.Number.Length > 0 && group.Linked.Length > 0 &&
                     group.Linked.All(link => link.DeclarationId == group.Linked[0].DeclarationId))
-                .Select(group => new AltaAssignmentRequest(new AltaGoodsKey(cmr!, group.Number),
-                    group.Linked[0].DeclarationId!.Value, group.Linked.Select(link => link.Parcel.Id).ToHashSet()))
-                .ToArray();
+                .GroupBy(group => group.Linked[0].DeclarationId!.Value)
+                .ToDictionary(group => group.Key,
+                    group => group.SelectMany(item => item.Linked).Select(link => link.Parcel.Id).ToHashSet());
+            return requested;
         }, CancellationToken.None);
 
         var snapshot = result.Registers.Single();
+        var goodsCounts = result.Shipments.Values.SelectMany(shipments => shipments.Values)
+            .Select(shipment => shipment?.Goods?.Count ?? 0).ToArray();
+        var requestedCount = requested.Values.Sum(ids => ids.Count);
+        var resolvedCount = goodsCounts.Count(count => count > 0);
         TestContext.WriteLine($"Read {snapshot.Declarations.Count} DECs and {snapshot.Parcels.Count} IndPost rows in {start.Elapsed.TotalSeconds:F1}s.");
-        TestContext.WriteLine($"Resolved {result.Goods.Values.Count(goods => goods.Items is { Count: > 0 })} of {result.Goods.Count} goods lookups.");
-        foreach (var failure in result.Goods.Values.Where(goods => goods.Failure is not null).GroupBy(goods => goods.Failure))
-            TestContext.WriteLine($"{failure.Count()} deferred: {failure.Key}");
+        TestContext.WriteLine($"Resolved goods for {resolvedCount} of {requestedCount} requested shipments. " +
+            $"Most goods lines on one parcel: {goodsCounts.DefaultIfEmpty().Max()}.");
         Assert.That(snapshot.Declarations, Is.Not.Empty);
         Assert.That(snapshot.Parcels, Is.Not.Empty);
-        Assert.That(result.Shipments.Values.Sum(shipments => shipments.Count), Is.Positive);
-        Assert.That(result.Goods.Values.Any(goods => goods.Items is { Count: > 0 }), Is.True);
+        Assert.That(requestedCount, Is.Positive);
+        Assert.That(resolvedCount, Is.EqualTo(requestedCount));
+        foreach (var (declarationId, shipments) in result.Shipments)
+            Assert.That(shipments.Keys, Is.SubsetOf(requested[declarationId]));
 
-        var idle = await source.ReadAsync(target, [cmr!], worklist, _ => [], CancellationToken.None);
+        var idle = await source.ReadAsync(target, [cmr!], _ => new Dictionary<Guid, HashSet<Guid>>(), CancellationToken.None);
         Assert.That(idle.Shipments, Is.Empty);
-        Assert.That(idle.Goods, Is.Empty);
     }
 
     [Test]
@@ -186,7 +191,6 @@ public sealed class MonitoringTests
         monitor.Source.MaxRegistersPerRead = 1;
         await monitor.PollAsync();
         Assert.That(monitor.Source.GroupSizes, Is.EqualTo(new[] { 2, 1, 1 }));
-        Assert.That(monitor.Source.WorklistSizes, Is.EqualTo(new[] { 2, 2, 2 }));
         Assert.That(monitor.Submissions, Has.Count.EqualTo(2));
         monitor.Source.GroupSizes.Clear();
         await monitor.PollAsync();
@@ -221,6 +225,24 @@ public sealed class MonitoringTests
         Assert.That(retried.ParcelNumber, Is.EqualTo("0003"));
         Assert.That(retried.Items.Select(item => item.Description), Is.EqualTo(new[] { "Updated goods" }));
         Assert.That(monitor.Source.Lookups.Last(), Is.EqualTo(new[] { "0003" }));
+    }
+
+    [Test]
+    public async Task ConflictingGoodsForOneParcelNumberStayPending()
+    {
+        using var monitor = new MonitoringFixture();
+        var first = Parcel("0001");
+        var second = Parcel("0001");
+        monitor.Put(Snapshot("CMR-1", first, second));
+        monitor.Source.ParcelDescriptions[second.Id] = "Different goods";
+
+        await monitor.PollAsync();
+        Assert.That(monitor.Submissions, Is.Empty);
+
+        monitor.Source.ParcelDescriptions.Clear();
+        monitor.Clock.UtcNow += TimeSpan.FromMinutes(1);
+        await monitor.PollAsync();
+        Assert.That(monitor.Submissions.Single().Assignments.Single().Items, Has.Count.EqualTo(1));
     }
 
     [Test]
@@ -341,85 +363,13 @@ public sealed class MonitoringTests
         Assert.That(TimeZoneInfo.ConvertTime(cron.GetNextValidTimeAfter(cursor)!.Value, zone).Day, Is.EqualTo(2));
     }
 
-    [Test]
-    public void ProjectsSparseGoodsColumnsInOrderWithoutCombiningRepeatedItems()
-    {
-        var first = new AltaGoodsSlot(1, "УИН: 00042", "0012345678", "3", "10.00", null);
-        var duplicate = first with { Position = 4, TnVed = null };
-        var invoice = new Dictionary<Guid, List<AltaGoodsSlot>>
-        {
-            [Guid.NewGuid()] = [duplicate, new(2, null, null, null, null, null), first]
-        };
-
-        var result = AltaSqlSource.ReadInvoice(invoice);
-
-        Assert.That(result.Items, Is.EqualTo(new[] { new AltaGoods("УИН: 00042", "0012345678", 3, 10.00m),
-            new AltaGoods("УИН: 00042", null, 3, 10.00m) }));
-        invoice.Values.Single().Add(new(3, null, null, null, null, "mark only"));
-        Assert.That(AltaSqlSource.ReadInvoice(invoice).Items, Is.Null);
-        invoice.Add(Guid.NewGuid(), [first]);
-        Assert.That(AltaSqlSource.ReadInvoice(invoice).Failure, Does.Contain("Several"));
-    }
-
     [TestCase("0.12345678901234567890123456789", false)]
     [TestCase("-0.001", true)]
     [TestCase("001.2300", true)]
     [TestCase("1,23", false)]
     public void AltaNumericParsingRejectsRoundingAndHostSpecificSeparators(string text, bool valid)
     {
-        Assert.That(AltaSqlSource.TryReadDecimal(text, out _), Is.EqualTo(valid));
-    }
-
-    [TestCase("123456789012345678901234567890", "10.00")]
-    [TestCase("1", "0.12345678901234567890123456789")]
-    public void GoodsLookupRejectsValuesThatCannotBeReadAsDecimals(string quantity, string total)
-    {
-        var invoice = new Dictionary<Guid, List<AltaGoodsSlot>>
-        {
-            [Guid.NewGuid()] = [new(1, "Goods", null, quantity, total, null)]
-        };
-
-        var result = AltaSqlSource.ReadInvoice(invoice);
-        Assert.That(result.Items, Is.Null);
-        Assert.That(result.Failure, Does.Contain("goods slot 1"));
-    }
-
-    [Test]
-    public void DuplicateInvoiceNumbersRequireOneChildOfTheSelectedIndPostDocuments()
-    {
-        var first = Guid.NewGuid();
-        var second = Guid.NewGuid();
-        var indPost = Guid.NewGuid();
-        var otherIndPost = Guid.NewGuid();
-        var invoices = new Dictionary<Guid, List<AltaGoodsSlot>>
-        {
-            [first] = [new(1, "Previous invoice", null, "1", "10", null)],
-            [second] = [new(1, "Applicable invoice", null, "1", "15", null)]
-        };
-        var parents = new Dictionary<Guid, Guid> { [first] = otherIndPost, [second] = indPost };
-
-        Assert.That(AltaSqlSource.ReadInvoice(invoices, parents, new HashSet<Guid> { indPost }).Items!.Single().Description,
-            Is.EqualTo("Applicable invoice"));
-        Assert.That(AltaSqlSource.ReadInvoice(invoices, parents, new HashSet<Guid> { indPost, otherIndPost }).Items, Is.Null);
-    }
-
-    [Test]
-    public void AUniqueNumberCannotUseAnInvoiceLinkedToAnotherIndPost()
-    {
-        var invoice = Guid.NewGuid();
-        var indPostA = Guid.NewGuid();
-        var indPostB = Guid.NewGuid();
-        var invoices = new Dictionary<Guid, List<AltaGoodsSlot>>
-        {
-            [invoice] = [new(1, "Goods", null, "1", "15", null)]
-        };
-        var parents = new Dictionary<Guid, Guid> { [invoice] = indPostA };
-
-        Assert.That(AltaSqlSource.ReadInvoice(invoices, parents, new HashSet<Guid> { indPostA }).Items, Is.Not.Null);
-        Assert.That(AltaSqlSource.ReadInvoice(invoices, parents, new HashSet<Guid> { indPostB }).Items, Is.Null);
-        Assert.That(AltaSqlSource.ReadInvoice(invoices, new Dictionary<Guid, Guid>(), new HashSet<Guid> { indPostB }).Items,
-            Is.Not.Null);
-        Assert.That(AltaSqlSource.ReadInvoice(invoices, allowParentless: false).Items, Is.Null);
+        Assert.That(AltaSourceValues.TryReadDecimal(text, out _), Is.EqualTo(valid));
     }
 
     [Test]
@@ -448,12 +398,97 @@ public sealed class MonitoringTests
             </AltaExpressCargoDeclaration>
             """;
         await using var stream = new MemoryStream(Encoding.ASCII.GetBytes(xml));
-        var result = await AltaDeclarationDocument.ReadAsync(stream, CancellationToken.None);
+        var result = await AltaDeclarationDocument.ReadAsync(stream, new HashSet<Guid> { id, other }, CancellationToken.None);
         Assert.That(result[id]!.Number, Is.EqualTo("0001"));
         Assert.That(result[id]!.Payments, Is.EqualTo(new[] { new AltaPayment("customsFee", 100m, "RUB") }));
         Assert.That(result[id]!.DecisionAt, Is.EqualTo(new DateTimeOffset(2026, 4, 16, 12, 37, 45, TimeSpan.FromHours(3))));
         Assert.That(result[id]!.WeightKg, Is.EqualTo(0.245m));
         Assert.That(result[other], Is.Null);
+    }
+
+    [Test]
+    public async Task DeclarationXmlReturnsEveryGoodsLineForTheSelectedIndPostRowsInOrder()
+    {
+        var id = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var expected = Enumerable.Range(1, 6).Select(i =>
+            new AltaGoods($"УИН: 000{i}; Goods", i == 6 ? null : "0012345678", i, i + 0.25m)).ToArray();
+        expected[0] = expected[0] with { Description = $"  {expected[0].Description}  " };
+        // Preserve parseable values so Core can record any business validation errors.
+        expected[1] = expected[1] with { Quantity = 1.5m };
+        expected[2] = expected[2] with { Quantity = 0m, TotalCost = -1m };
+        expected[4] = expected[0];
+        var lines = string.Concat(expected.Select(item => FormattableString.Invariant($"""
+            <GoodsItemDetails>
+              <GoodsDescription>{item.Description}</GoodsDescription>
+              <GoodsTNVEDCode>{item.TnVed}</GoodsTNVEDCode>
+              <SupplementaryQuantity_GoodsQuantity>{item.Quantity}</SupplementaryQuantity_GoodsQuantity>
+              <TotalGoodsNumeric>100</TotalGoodsNumeric>
+              <CAValueAmount><CurrencyQuantity>{item.TotalCost}</CurrencyQuantity><CurrencyCode>UZS</CurrencyCode></CAValueAmount>
+              <CAValueAmount><CurrencyQuantity>100.00</CurrencyQuantity><CurrencyCode>RUB</CurrencyCode></CAValueAmount>
+              <CustomsCost_CurrencyQuantity>200.00</CustomsCost_CurrencyQuantity>
+            </GoodsItemDetails>
+            """)));
+        var xml = $"""
+            <AltaExpressCargoDeclaration xmlns="urn:alta">
+              <GoodsShipment_HouseShipment>
+                <IndGid>{id:B}</IndGid>
+                <HouseWaybillDetails_PrDocumentNumber>0001</HouseWaybillDetails_PrDocumentNumber>
+                {lines}
+              </GoodsShipment_HouseShipment>
+              <GoodsShipment_HouseShipment>
+                <IndGid>{other:B}</IndGid>
+                <HouseWaybillDetails_PrDocumentNumber>0001</HouseWaybillDetails_PrDocumentNumber>
+                {lines}
+              </GoodsShipment_HouseShipment>
+              <GoodsShipment_HouseShipment>
+                <IndGid>{second:B}</IndGid>
+                <HouseWaybillDetails_PrDocumentNumber>0002</HouseWaybillDetails_PrDocumentNumber>
+                <GoodsItemDetails>
+                  <GoodsDescription>Second shipment goods</GoodsDescription>
+                  <SupplementaryQuantity_GoodsQuantity>1</SupplementaryQuantity_GoodsQuantity>
+                  <CAValueAmount><CurrencyQuantity>5.00</CurrencyQuantity></CAValueAmount>
+                </GoodsItemDetails>
+              </GoodsShipment_HouseShipment>
+            </AltaExpressCargoDeclaration>
+            """;
+        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(xml));
+        var result = await AltaDeclarationDocument.ReadAsync(stream, new HashSet<Guid> { id, second }, CancellationToken.None);
+
+        Assert.That(result.Keys, Is.EquivalentTo(new[] { id, second }));
+        Assert.That(result[id]!.Goods, Is.EqualTo(expected));
+        Assert.That(result[second]!.Goods, Is.EqualTo(new[] { new AltaGoods("Second shipment goods", null, 1, 5) }));
+    }
+
+    [TestCase("123456789012345678901234567890", "10.00")]
+    [TestCase("1", "0.12345678901234567890123456789")]
+    [TestCase("1", "")]
+    public async Task IncompleteXmlGoodsLinePreventsPartialGoodsList(string quantity, string total)
+    {
+        var id = Guid.NewGuid();
+        var xml = $"""
+            <AltaExpressCargoDeclaration>
+              <GoodsShipment_HouseShipment>
+                <IndGid>{id:B}</IndGid>
+                <HouseWaybillDetails_PrDocumentNumber>0001</HouseWaybillDetails_PrDocumentNumber>
+                <GoodsItemDetails>
+                  <GoodsDescription>Valid goods</GoodsDescription>
+                  <SupplementaryQuantity_GoodsQuantity>1</SupplementaryQuantity_GoodsQuantity>
+                  <CAValueAmount><CurrencyQuantity>10.00</CurrencyQuantity></CAValueAmount>
+                </GoodsItemDetails>
+                <GoodsItemDetails>
+                  <GoodsDescription>Invalid goods</GoodsDescription>
+                  <SupplementaryQuantity_GoodsQuantity>{quantity}</SupplementaryQuantity_GoodsQuantity>
+                  <CAValueAmount><CurrencyQuantity>{total}</CurrencyQuantity></CAValueAmount>
+                </GoodsItemDetails>
+              </GoodsShipment_HouseShipment>
+            </AltaExpressCargoDeclaration>
+            """;
+        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(xml));
+        var result = await AltaDeclarationDocument.ReadAsync(stream, new HashSet<Guid> { id }, CancellationToken.None);
+
+        Assert.That(result[id]!.Goods, Is.Null);
     }
 
     private static readonly Guid MainDec = Guid.NewGuid();
@@ -549,34 +584,35 @@ public sealed class MonitoringTests
         public Dictionary<string, AltaRegisterSnapshot> Snapshots { get; set; } = [];
         public List<string[]> Lookups { get; } = [];
         public List<int> GroupSizes { get; } = [];
-        public List<int> WorklistSizes { get; } = [];
         public int MaxRegistersPerRead { get; set; } = int.MaxValue;
         public Action? AfterRead { get; set; }
         public string? Missing { get; set; }
         public string Description { get; set; } = "Original goods";
+        public Dictionary<Guid, string> ParcelDescriptions { get; } = [];
         public IReadOnlyList<AltaPayment> Payments { get; set; } = [];
 
-        public Task<AltaSourceRead> ReadAsync(RuntimeDatabaseTarget target, IReadOnlyList<string> cmrs, IReadOnlySet<string> worklist,
-            Func<IReadOnlyList<AltaRegisterSnapshot>, IReadOnlyCollection<AltaAssignmentRequest>> selectAssignments,
+        public Task<AltaSourceRead> ReadAsync(RuntimeDatabaseTarget target, IReadOnlyList<string> cmrs,
+            Func<IReadOnlyList<AltaRegisterSnapshot>, IReadOnlyDictionary<Guid, HashSet<Guid>>> selectShipments,
             CancellationToken token)
         {
             GroupSizes.Add(cmrs.Count);
-            WorklistSizes.Add(worklist.Count);
             if (cmrs.Count > MaxRegistersPerRead)
                 throw new TimeoutException();
             var snapshots = cmrs.Select(cmr => Snapshots[cmr]).ToArray();
-            var goodsRequests = selectAssignments(snapshots);
-            if (goodsRequests.Count > 0)
-                Lookups.Add(goodsRequests.Select(item => item.Key.ParcelNumber).Distinct(StringComparer.Ordinal).ToArray());
-            var goods = goodsRequests.Where(item => item.Key.ParcelNumber != Missing)
-                .ToDictionary(item => item.Key, _ => new AltaGoodsLookup([new(Description, null, 1, 0)]));
-            var shipments = goodsRequests.GroupBy(request => request.DeclarationId).ToDictionary(group => group.Key,
-                group => (IReadOnlyDictionary<Guid, AltaShipment?>)group
-                    .SelectMany(request => request.IndPostIds.Select(id => Snapshots[request.Key.Cmr].Parcels[id]))
-                    .DistinctBy(parcel => parcel.Id)
-                    .ToDictionary(parcel => parcel.Id, parcel => (AltaShipment?)new AltaShipment(parcel.Number, null, Payments, null)));
+            var requested = selectShipments(snapshots);
+            var parcels = snapshots.SelectMany(snapshot => snapshot.Parcels.Values).ToDictionary(parcel => parcel.Id);
+            if (requested.Count > 0)
+                Lookups.Add(requested.Values.SelectMany(ids => ids).Select(id => parcels[id].Number)
+                    .Distinct(StringComparer.Ordinal).ToArray());
+            var shipments = requested.ToDictionary(declaration => declaration.Key,
+                declaration => (IReadOnlyDictionary<Guid, AltaShipment?>)declaration.Value.ToDictionary(id => id, id =>
+                {
+                    var parcel = parcels[id];
+                    return (AltaShipment?)new AltaShipment(parcel.Number, null, Payments, null,
+                        parcel.Number == Missing ? null : [new(ParcelDescriptions.GetValueOrDefault(id, Description), null, 1, 0)]);
+                }));
             AfterRead?.Invoke();
-            return Task.FromResult(new AltaSourceRead(snapshots, goods, shipments));
+            return Task.FromResult(new AltaSourceRead(snapshots, shipments));
         }
     }
 }

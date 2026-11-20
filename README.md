@@ -10,10 +10,10 @@ Logibooks Alta Adapter is a Windows application that monitors one or more Micros
 - Production SQL Server instances and databases remain external and are not installed or managed by the adapter.
 - In development, run the adapter on Windows with SQL Server 2025 and Adminer in Docker Desktop's Linux containers.
 - Quartz runs an initial cycle on enabled startup, then follows the configured cron and time zone. A running cycle causes overlapping firings to be skipped.
-- With Core enabled, each cycle refreshes the CMR worklist and reads the matching Alta declarations and IndPost parcels. New or changed assignments get their goods from `E2IList` on demand. The adapter uses `Docs.PARENTGID` to verify an invoice belongs to the linked IndPost document and to select among invoices with the same number. Ambiguous or incomplete assignments stay pending. The adapter keeps the monitoring baseline in memory and reads the goods again when retrying a submission.
-- With Core disabled, enabled SQL targets receive a connectivity probe. Target concurrency is bounded in either mode. Core authorizes both the `adapter-alta` role and the target's configured writer account.
+- With Core enabled, each cycle refreshes the CMR worklist and reads the matching Alta declarations and IndPost parcels. For queued assignments and retries, the adapter reads the declaration XML in `Docs.BLOB` and matches the shipment by IndPost `DOCGID` and parcel number. It sends all goods lines in XML order, using each line's total in the invoice currency. Ambiguous or incomplete assignments stay pending. The adapter keeps the monitoring baseline in memory.
+- With Core disabled, enabled SQL targets receive a connectivity probe. Target concurrency is bounded in either mode.
 - Transient GET failures receive up to three attempts with 1- and 2-second delays. An explicit HTTP `401` permits one fresh-login retry. A submission with an unknown outcome can be retried during a later eligible cycle.
-- Configuration reload applies schedule changes without rebuilding the monitoring baseline. Changing the SQL source or Core destination or writer starts a fresh baseline for that scope.
+- Configuration reload applies schedule changes without rebuilding the monitoring baseline. Changing the SQL source, Core URL, or Core account starts a fresh baseline for that scope.
 - Enable submissions after Core and the adapter support the array-based Alta batch contract.
 - Logs identify database targets by configured name but sanitize connection strings, SQL passwords, Core passwords, and JWTs.
 
@@ -47,7 +47,7 @@ Open `Logibooks.Alta.Adapter.Setup.exe` and choose the installation mode.
 
 Both modes preserve their configuration during upgrades and uninstall. For unattended installation, use `/CURRENTUSER /VERYSILENT /NORESTART` for console mode or `/ALLUSERS /VERYSILENT /NORESTART` from an elevated prompt for service mode.
 
-At the `alta>` prompt, use `login` to verify the configured writer session, `worklist [database]` to list CMRs, and `submit` to enter and preview one customs decision for a parcel number. Add all goods before submitting. Each goods entry has a description, optional TN VED, quantity, and total cost for that quantity. Type `y` at the confirmation prompt to send it. `status` shows recent Core results. `help` lists commands and `exit` stops the adapter. Configuration reload switches between the prompt and monitoring after any in-flight operation finishes or times out.
+At the `alta>` prompt, use `login` to verify that the configured Core account can sign in, `worklist [database]` to list CMRs, and `submit` to enter and preview one customs decision for a parcel number. Add all goods before submitting. Each goods entry has a description, optional TN VED, quantity, and total cost for that quantity. Type `y` at the confirmation prompt to send it. `status` shows recent Core results. `help` lists commands and `exit` stops the adapter. Configuration reload switches between the prompt and monitoring after any in-flight operation finishes or times out.
 
 Windows installations write rolling logs under `%ProgramData%\Logibooks\Alta\Logs` for the service and `%LOCALAPPDATA%\Logibooks\Alta\Logs` for the console app. Log files rotate daily or at 10 MiB, with up to 14 files retained. Use `Logging:LogLevel` to set severity and `Logging:File:Enabled` to toggle file logging. `Logging:File:Directory` accepts an absolute path or a path relative to `appsettings.json`. A custom service log directory must grant `LocalService` modify access. Restart the adapter after changing file logging settings.
 
@@ -86,7 +86,7 @@ An existing 0.1.0 configuration using `ConnectionStrings.AltaDatabase` must be u
 }
 ```
 
-Target names must be nonempty and unique among enabled targets. Enabled targets need valid SQL connection strings. `Databases.MaxConcurrentProbes` accepts 1–32 and defaults to 4. When `Service.Enabled` is true, at least one database target must be enabled. Core URL and credentials are required only when both `Service.Enabled` and `Core.Enabled` are true; Core defaults to enabled.
+Target names must be nonempty and unique among enabled targets. Enabled targets need valid SQL connection strings. `Databases.MaxConcurrentProbes` accepts 1–32 and defaults to 4. When `Service.Enabled` is true, at least one database target must be enabled. Core URL and credentials are required only when both `Service.Enabled` and `Core.Enabled` are true. Core defaults to enabled. The Core account must have the `adapter-alta` role to fetch worklists and submit parcel changes. For Core integration, set each enabled target's `Name` to match an entry in Core's `AltaMonitoring:DatabaseNames`, including case. Core returns an empty worklist when the name has no match.
 
 Set `Service.Enabled` to true only after configuration is valid. In service mode, operational events appear in **Event Viewer → Windows Logs → Application** with source `Logibooks Alta Adapter`.
 
@@ -121,7 +121,7 @@ docker compose up -d
 - The `db` service mounts the existing PostgreSQL 17 cluster from `../.pgdata`. Set `LOGIBOOKS_CORE_PGDATA` in `.env` if your data directory is elsewhere. Run one stack at a time against that directory. If the standalone Core stack currently owns it, stop that stack before starting Alta's full stack.
 - Keep the `core` and `ui` checkouts next to Alta, or set `LOGIBOOKS_CORE_DIR` and `LOGIBOOKS_UI_DIR` in `.env`.
 - Sign in to the [local UI](http://localhost:18082) with your existing Logibooks account. Core connects to the existing `logibooks` database and applies its normal startup migrations. [Core Swagger](http://localhost:18080/swagger) is available on the host.
-- To use Core worklists, set `Core__Enabled=true`, `Core__Email`, `Core__Password`, and `AltaMonitoring__WriterUserIds__reestr_1` in `.env` for an existing account with the `adapter-alta` role. The worklist uses registers with a CMR number, `reestr_1` as their Alta database, and a status with Alta monitoring enabled.
+- To use Core worklists, set `Core__Enabled=true`, `Core__Email`, and `Core__Password` in `.env` for an existing account with the `adapter-alta` role. The worklist uses registers with a CMR number, `reestr_1` as their Alta database, and a status with Alta monitoring enabled.
 - Alta uses the `reestr_1` SQL password from `.env`. If the password contains a double quote, set `ALTA_SQL_CONNECTION_STRING` to the complete SQL connection string with the password escaped as required by SqlClient.
 
 Open [Adminer](http://localhost:8083) and choose the connection for the database you want to inspect.

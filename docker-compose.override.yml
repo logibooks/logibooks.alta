@@ -45,7 +45,6 @@ services:
       - ASPNETCORE_ENVIRONMENT=Development
       - ConnectionStrings__DefaultConnection
       - AltaMonitoring__DatabaseNames__0=reestr_1
-      - AltaMonitoring__WriterUserIds__reestr_1
       - QzPrinting__Enabled=false
     ports:
       - "127.0.0.1:${LOGIBOOKS_TEST_CORE_PORT:-18080}:8080"

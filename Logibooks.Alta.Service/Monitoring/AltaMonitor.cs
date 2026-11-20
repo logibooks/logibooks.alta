@@ -105,19 +105,19 @@ internal sealed class AltaMonitor(
             AltaSourceRead read;
             try
             {
-                read = await source.ReadAsync(target, group, worklist, snapshots =>
+                read = await source.ReadAsync(target, group, snapshots =>
                 {
                     foreach (var snapshot in snapshots)
                     {
                         state.Registers.TryGetValue(snapshot.Cmr, out var baseline);
                         projection.Add(snapshot.Cmr, CompareSnapshot(target, snapshot, baseline));
                     }
-                    return projection.SelectMany(register => register.Value.Values
+                    return projection.Values.SelectMany(deliveries => deliveries.Values)
                         .Where(item => item.IsDue(now))
-                        .Select(item => new AltaAssignmentRequest(
-                            new AltaGoodsKey(register.Key, item.Observation.ParcelNumber),
-                            item.Observation.Declaration.Id,
-                            item.Observation.Parcels.Select(parcel => parcel.Id).ToHashSet()))).ToArray();
+                        .GroupBy(item => item.Observation.Declaration.Id)
+                        .ToDictionary(declaration => declaration.Key,
+                            declaration => declaration.SelectMany(item => item.Observation.Parcels)
+                                .Select(parcel => parcel.Id).ToHashSet());
                 }, token);
             }
             catch (Exception exception) when (!token.IsCancellationRequested)
@@ -248,7 +248,7 @@ internal sealed class AltaMonitor(
         return declaration is null ? null : new Observation(parcels.Key, declaration, decisionCode, linked);
     }
 
-    private static AltaAssignment? BuildAssignment(string cmr, Observation observation, AltaSourceRead read,
+    private static AltaAssignment? BuildAssignment(Observation observation, AltaSourceRead read,
         out string? failure)
     {
         var declaration = observation.Declaration;
@@ -265,7 +265,7 @@ internal sealed class AltaMonitor(
             failure = "Missing or invalid DEC XML";
             return null;
         }
-        var linked = new List<(AltaParcel Parcel, AltaShipment Shipment)>();
+        var linked = new List<(AltaParcel Parcel, AltaShipment Shipment, IReadOnlyList<AltaGoods> Goods)>();
         foreach (var parcel in observation.Parcels)
         {
             if (!shipments.TryGetValue(parcel.Id, out var shipment) || shipment is null || shipment.Number != parcel.Number)
@@ -273,11 +273,16 @@ internal sealed class AltaMonitor(
                 failure = $"Incomplete customs data for IndPost {parcel.Id}";
                 return null;
             }
-            linked.Add((parcel, shipment));
+            if (shipment.Goods is not { Count: > 0 } goods)
+            {
+                failure = $"Missing or invalid DEC XML goods for IndPost {parcel.Id}";
+                return null;
+            }
+            linked.Add((parcel, shipment, goods));
         }
 
-        var first = linked[0].Shipment;
-        if (linked.Any(item => !item.Shipment.Payments.SequenceEqual(first.Payments)))
+        var first = linked[0];
+        if (linked.Any(item => !item.Shipment.Payments.SequenceEqual(first.Shipment.Payments)))
         {
             failure = "Conflicting customs payments for this parcel number";
             return null;
@@ -289,18 +294,17 @@ internal sealed class AltaMonitor(
             return null;
         }
 
-        if (!read.Goods.TryGetValue(new AltaGoodsKey(cmr, observation.ParcelNumber), out var invoice) ||
-            invoice.Items is not { Count: > 0 } items)
+        if (linked.Any(item => !item.Goods.SequenceEqual(first.Goods)))
         {
-            failure = invoice?.Failure ?? "E2IList lookup returned no goods";
+            failure = "Conflicting DEC XML goods for this parcel number";
             return null;
         }
 
-        var time = linked.All(item => item.Shipment.DecisionAt.HasValue) ? first.DecisionAt : null;
+        var time = linked.All(item => item.Shipment.DecisionAt.HasValue) ? first.Shipment.DecisionAt : null;
         var weights = linked.Select(item => item.Shipment.WeightKg ?? item.Parcel.WeightKg).Distinct().Take(2).ToArray();
         failure = null;
-        return new AltaAssignment(observation.ParcelNumber, items,
-            new AltaDecision(observation.DecisionCode, declaration.Procedure!, time), first.Payments,
+        return new AltaAssignment(observation.ParcelNumber, first.Goods,
+            new AltaDecision(observation.DecisionCode, declaration.Procedure!, time), first.Shipment.Payments,
             weights.Length == 1 ? weights[0] : null);
     }
 
@@ -313,7 +317,7 @@ internal sealed class AltaMonitor(
             var ready = new List<(Delivery Delivery, AltaAssignment Assignment)>();
             foreach (var delivery in group.OrderBy(item => item.Observation.ParcelNumber, StringComparer.Ordinal))
             {
-                var assignment = BuildAssignment(cmr, delivery.Observation, read, out var failure);
+                var assignment = BuildAssignment(delivery.Observation, read, out var failure);
                 if (assignment is null)
                 {
                     logger.LogWarning("Deferred Alta {DatabaseTarget} / {Cmr} / {ParcelNumber}: {Reason}",
