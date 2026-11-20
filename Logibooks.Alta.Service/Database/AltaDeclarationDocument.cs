@@ -11,7 +11,8 @@ using Logibooks.Alta.CoreApi;
 namespace Logibooks.Alta.Database;
 
 internal sealed record AltaShipment(
-    string Number, DateTimeOffset? DecisionAt, IReadOnlyList<AltaPayment> Payments, decimal? WeightKg);
+    string Number, DateTimeOffset? DecisionAt, IReadOnlyList<AltaPayment> Payments, decimal? WeightKg,
+    IReadOnlyList<AltaGoods>? Goods);
 
 internal static class AltaDeclarationDocument
 {
@@ -20,7 +21,8 @@ internal static class AltaDeclarationDocument
 
     static AltaDeclarationDocument() => Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-    public static async Task<IReadOnlyDictionary<Guid, AltaShipment?>> ReadAsync(Stream stream, CancellationToken token)
+    public static async Task<IReadOnlyDictionary<Guid, AltaShipment?>> ReadAsync(Stream stream,
+        IReadOnlySet<Guid> parcelIds, CancellationToken token)
     {
         using var reader = XmlReader.Create(stream, new XmlReaderSettings
         {
@@ -36,10 +38,10 @@ internal static class AltaDeclarationDocument
         foreach (var shipment in Children(root, "GoodsShipment_HouseShipment"))
         {
             token.ThrowIfCancellationRequested();
-            if (AltaSourceValues.ReadDeclarationReference(Value(shipment, "IndGid")) is not { } id)
+            if (AltaSourceValues.ReadDeclarationReference(Value(shipment, "IndGid")) is not { } id || !parcelIds.Contains(id))
                 continue;
 
-            // Two records for the same source parcel cannot establish a single payment history.
+            // Duplicate shipments for the same IndPost document make the assignment ambiguous.
             if (!shipments.TryAdd(id, ReadShipment(shipment)))
                 shipments[id] = null;
         }
@@ -59,7 +61,7 @@ internal static class AltaDeclarationDocument
             var amountText = Value(payment, "PaymentAmount");
             if (string.IsNullOrEmpty(mode) && string.IsNullOrEmpty(amountText))
                 continue;
-            if (!AltaSqlSource.TryReadDecimal(amountText, out var amount) || amount < 0)
+            if (!AltaSourceValues.TryReadDecimal(amountText, out var amount) || amount < 0)
                 return null;
 
             var kind = mode switch
@@ -88,13 +90,33 @@ internal static class AltaDeclarationDocument
             ? time : (DateTimeOffset?)null;
 
         var weightKg = Value(shipment, "UnifiedGrossWeightQuantity_MeasureUnitQualifierCode") == "166" &&
-            AltaSqlSource.TryReadDecimal(Value(shipment, "UnifiedGrossWeightQuantity_GoodsQuantity"), out var weight) &&
+            AltaSourceValues.TryReadDecimal(Value(shipment, "UnifiedGrossWeightQuantity_GoodsQuantity"), out var weight) &&
             weight is >= 0 and < 10_000_000 ? weight : (decimal?)null;
 
         return new AltaShipment(number, decisionAt,
             payments.OrderBy(payment => payment.Kind, StringComparer.Ordinal)
                 .ThenBy(payment => payment.Currency, StringComparer.Ordinal).ThenBy(payment => payment.Amount).ToArray(),
-            weightKg);
+            weightKg, ReadGoods(shipment));
+    }
+
+    private static IReadOnlyList<AltaGoods>? ReadGoods(XElement shipment)
+    {
+        var goods = new List<AltaGoods>();
+        foreach (var item in Children(shipment, "GoodsItemDetails"))
+        {
+            var description = Children(item, "GoodsDescription").FirstOrDefault()?.Value;
+            // The first CAValueAmount carries the total in the invoice currency.
+            var declaredValue = Children(item, "CAValueAmount").FirstOrDefault();
+            // Core validates business rules for the parsed values and records any rejection.
+            if (string.IsNullOrWhiteSpace(description) || declaredValue is null ||
+                !AltaSourceValues.TryReadDecimal(Value(item, "SupplementaryQuantity_GoodsQuantity"), out var quantity) ||
+                !AltaSourceValues.TryReadDecimal(Value(declaredValue, "CurrencyQuantity"), out var total))
+                return null;
+
+            var tnVed = Value(item, "GoodsTNVEDCode");
+            goods.Add(new AltaGoods(description, string.IsNullOrEmpty(tnVed) ? null : tnVed, quantity, total));
+        }
+        return goods.Count == 0 ? null : goods;
     }
 
     private static IEnumerable<XElement> Children(XElement element, string localName) =>
@@ -119,5 +141,25 @@ internal static class AltaSourceValues
             value = value[2..^1];
         return (Guid.TryParseExact(value, "B", out var id) || Guid.TryParseExact(value, "D", out id)) &&
                id != Guid.Empty ? id : null;
+    }
+
+    public static bool TryReadDecimal(string? source, out decimal value)
+    {
+        var text = source?.Trim() ?? "";
+        if (!decimal.TryParse(text, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture, out value))
+            return false;
+
+        // Decimal.TryParse can round an otherwise valid value with more precision than decimal supports.
+        var unsigned = text.TrimStart('+', '-');
+        var dot = unsigned.IndexOf('.');
+        var whole = (dot < 0 ? unsigned : unsigned[..dot]).TrimStart('0');
+        var fraction = dot < 0 ? "" : unsigned[(dot + 1)..].TrimEnd('0');
+        var canonical = whole.Length == 0 ? "0" : whole;
+        if (fraction.Length != 0)
+            canonical += "." + fraction;
+        if (text.StartsWith('-') && canonical != "0")
+            canonical = "-" + canonical;
+        return canonical == value.ToString("0.############################", CultureInfo.InvariantCulture);
     }
 }
