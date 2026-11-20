@@ -6,7 +6,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Console;
-using Microsoft.Extensions.Options;
 using System.Globalization;
 using System.Text.Json;
 using System.Xml.Linq;
@@ -62,8 +61,12 @@ public sealed class HostConstructionTests
         }
     }
 
-    [Test]
-    public void BuildHost_ConfiguresCultureAwareConsoleAndRollingFileTimestamps()
+    [TestCase(null, "[")]
+    [TestCase(ConsoleFormatterNames.Simple, "[")]
+    [TestCase(ConsoleFormatterNames.Systemd, "<6>[")]
+    [TestCase(ConsoleFormatterNames.Json, null)]
+    public void BuildHost_WritesCultureAwareConsoleAndRollingFileTimestamps(
+        string? formatterName, string? textTimestampPrefix)
     {
         var configurationDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -81,35 +84,40 @@ public sealed class HostConstructionTests
         var configurationVariable = Configuration.ConfigurationPaths.ConfigurationPathEnvironmentVariable;
         var originalPath = Environment.GetEnvironmentVariable(configurationVariable);
         var originalCulture = CultureInfo.CurrentCulture;
+        var originalConsoleOutput = Console.Out;
         var culture = CultureInfo.GetCultureInfo("en-GB");
-        var expectedTextTimestampFormat =
-            $"[{culture.DateTimeFormat.ShortDatePattern} {culture.DateTimeFormat.LongTimePattern}] ";
+        var args = formatterName is null ? Array.Empty<string>() : [$"--Logging:Console:FormatterName={formatterName}"];
+        using var consoleOutput = new StringWriter(culture);
+        const string logMessage = "timestamp format test";
 
         try
         {
             Environment.SetEnvironmentVariable(configurationVariable, configurationPath);
             CultureInfo.CurrentCulture = culture;
-            using (var host = ProgramEntry.BuildHost([]))
+            Console.SetOut(consoleOutput);
+            using (var host = ProgramEntry.BuildHost(args))
             {
                 var loggerFactory = host.Services.GetRequiredService<ILoggerFactory>();
-                loggerFactory.CreateLogger<HostConstructionTests>().LogInformation("timestamp format test");
-
-                Assert.Multiple(() =>
-                {
-                    Assert.That(
-                        host.Services.GetRequiredService<IOptionsMonitor<SimpleConsoleFormatterOptions>>()
-                            .CurrentValue.TimestampFormat,
-                        Is.EqualTo(expectedTextTimestampFormat));
-                    Assert.That(
-                        host.Services.GetRequiredService<IOptionsMonitor<ConsoleFormatterOptions>>()
-                            .CurrentValue.TimestampFormat,
-                        Is.EqualTo(expectedTextTimestampFormat));
-                    Assert.That(
-                        host.Services.GetRequiredService<IOptionsMonitor<JsonConsoleFormatterOptions>>()
-                            .CurrentValue.TimestampFormat,
-                        Is.EqualTo("G"));
-                });
+                loggerFactory.CreateLogger<HostConstructionTests>().LogInformation(logMessage);
             }
+
+            var consoleEntry = consoleOutput.ToString();
+            Assert.That(consoleEntry, Does.Contain(logMessage));
+            string? consoleTimestamp;
+            if (textTimestampPrefix is null)
+            {
+                using var jsonEntry = JsonDocument.Parse(consoleEntry);
+                Assert.That(jsonEntry.RootElement.TryGetProperty("Timestamp", out var timestamp), Is.True);
+                consoleTimestamp = timestamp.GetString();
+            }
+            else
+            {
+                Assert.That(consoleEntry, Does.StartWith(textTimestampPrefix));
+                var timestampEnd = consoleEntry.IndexOf("] ", StringComparison.Ordinal);
+                Assert.That(timestampEnd, Is.GreaterThan(textTimestampPrefix.Length));
+                consoleTimestamp = consoleEntry[textTimestampPrefix.Length..timestampEnd];
+            }
+            Assert.That(DateTime.TryParseExact(consoleTimestamp, "G", culture, DateTimeStyles.None, out _), Is.True);
 
             var logFile = Directory.GetFiles(Path.Combine(configurationDirectory, "logs"), "alta-*.log")
                 .Single();
@@ -119,10 +127,11 @@ public sealed class HostConstructionTests
             Assert.That(
                 DateTime.TryParseExact(logEntry[..levelIndex], "G", culture, DateTimeStyles.None, out _),
                 Is.True);
-            Assert.That(logEntry, Does.Contain("timestamp format test"));
+            Assert.That(logEntry, Does.Contain(logMessage));
         }
         finally
         {
+            Console.SetOut(originalConsoleOutput);
             CultureInfo.CurrentCulture = originalCulture;
             Environment.SetEnvironmentVariable(configurationVariable, originalPath);
             Directory.Delete(configurationDirectory, recursive: true);

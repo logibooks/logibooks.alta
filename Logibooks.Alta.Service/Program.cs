@@ -127,6 +127,7 @@ internal static class ProgramEntry
             options.TimestampFormat ??= textTimestampFormat;
 #pragma warning restore CS0618
         });
+        // Each built-in formatter reads the default options instance for its options type.
         logging.Services
             .Configure<SimpleConsoleFormatterOptions>(options => options.TimestampFormat ??= textTimestampFormat)
             .Configure<ConsoleFormatterOptions>(options => options.TimestampFormat ??= textTimestampFormat)
