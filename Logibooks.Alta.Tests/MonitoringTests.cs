@@ -19,12 +19,12 @@ namespace Logibooks.Alta.Tests;
 public sealed class MonitoringTests
 {
     [Test]
-    public async Task RestoredAltaDatabaseResolvesScopedDeclarationsAndGoods()
+    public async Task RestoredAltaDatabaseResolvesGoodsForEveryRequestedShipment()
     {
         var path = Environment.GetEnvironmentVariable("LOGIBOOKS_ALTA_SQL_TEST_CONFIG");
         var cmr = Environment.GetEnvironmentVariable("LOGIBOOKS_ALTA_SQL_TEST_CMR");
         if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(cmr))
-            Assert.Ignore("Set LOGIBOOKS_ALTA_SQL_TEST_CONFIG and LOGIBOOKS_ALTA_SQL_TEST_CMR for the restored SQL sample.");
+            Assert.Ignore("Set LOGIBOOKS_ALTA_SQL_TEST_CONFIG and LOGIBOOKS_ALTA_SQL_TEST_CMR for a restored SQL sample with complete declaration goods.");
 
         using var settings = JsonDocument.Parse(await File.ReadAllTextAsync(path!));
         var database = settings.RootElement.GetProperty("Databases").GetProperty("Targets").EnumerateArray()
@@ -52,13 +52,15 @@ public sealed class MonitoringTests
         var snapshot = result.Registers.Single();
         var goodsCounts = result.Shipments.Values.SelectMany(shipments => shipments.Values)
             .Select(shipment => shipment?.Goods?.Count ?? 0).ToArray();
+        var requestedCount = requested.Values.Sum(ids => ids.Count);
+        var resolvedCount = goodsCounts.Count(count => count > 0);
         TestContext.WriteLine($"Read {snapshot.Declarations.Count} DECs and {snapshot.Parcels.Count} IndPost rows in {start.Elapsed.TotalSeconds:F1}s.");
-        TestContext.WriteLine($"Resolved goods for {goodsCounts.Count(count => count > 0)} " +
-            $"of {requested.Values.Sum(ids => ids.Count)} requested shipments. " +
+        TestContext.WriteLine($"Resolved goods for {resolvedCount} of {requestedCount} requested shipments. " +
             $"Most goods lines on one parcel: {goodsCounts.DefaultIfEmpty().Max()}.");
         Assert.That(snapshot.Declarations, Is.Not.Empty);
         Assert.That(snapshot.Parcels, Is.Not.Empty);
-        Assert.That(goodsCounts.Any(count => count > 0), Is.True);
+        Assert.That(requestedCount, Is.Positive);
+        Assert.That(resolvedCount, Is.EqualTo(requestedCount));
         foreach (var (declarationId, shipments) in result.Shipments)
             Assert.That(shipments.Keys, Is.SubsetOf(requested[declarationId]));
 
