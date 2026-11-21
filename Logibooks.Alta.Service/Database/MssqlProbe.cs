@@ -25,7 +25,13 @@ internal interface IDatabaseConnection : IAsyncDisposable
 internal sealed class SqlConnectionFactory : IDatabaseConnectionFactory
 {
     public IDatabaseConnection Create(string connectionString) =>
-        new SqlDatabaseConnection(new SqlConnection(connectionString));
+        new SqlDatabaseConnection(CreateUnpooledConnection(connectionString));
+
+    internal static SqlConnection CreateUnpooledConnection(string connectionString)
+    {
+        var settings = new SqlConnectionStringBuilder(connectionString) { Pooling = false };
+        return new SqlConnection(settings.ConnectionString);
+    }
 }
 
 internal sealed class SqlDatabaseConnection(SqlConnection connection) : IDatabaseConnection

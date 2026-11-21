@@ -4,12 +4,32 @@
 
 using Logibooks.Alta.Database;
 using Logibooks.Alta.Configuration;
+using Microsoft.Data.SqlClient;
 
 namespace Logibooks.Alta.Tests;
 
 [TestFixture]
 public sealed class MssqlProbeTests
 {
+    [TestCase("")]
+    [TestCase(";Pooling=True")]
+    public void CreateUnpooledConnection_DisablesPoolingAndPreservesTargetSettings(string poolingSetting)
+    {
+        const string connectionString = "Server=db;Database=alta;User Id=reader;Password='test;password';Connect Timeout=15";
+        using var connection = SqlConnectionFactory.CreateUnpooledConnection(connectionString + poolingSetting);
+        var settings = new SqlConnectionStringBuilder(connection.ConnectionString);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(settings.Pooling, Is.False);
+            Assert.That(settings.DataSource, Is.EqualTo("db"));
+            Assert.That(settings.InitialCatalog, Is.EqualTo("alta"));
+            Assert.That(settings.UserID, Is.EqualTo("reader"));
+            Assert.That(settings.Password, Is.EqualTo("test;password"));
+            Assert.That(settings.ConnectTimeout, Is.EqualTo(15));
+        });
+    }
+
     [Test]
     public async Task ProbeAsync_OpensConnectionAndExecutesExpectedCommand()
     {

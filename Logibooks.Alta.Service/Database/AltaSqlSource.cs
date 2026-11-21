@@ -60,7 +60,7 @@ internal sealed class AltaSqlSource : IAltaSource
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
         deadline.CancelAfter(TimeSpan.FromSeconds(cmrs.Count == 1 ? SingleRegisterTimeoutSeconds : GroupTimeoutSeconds));
         var readToken = deadline.Token;
-        await using var connection = new SqlConnection(target.ConnectionString);
+        await using var connection = SqlConnectionFactory.CreateUnpooledConnection(target.ConnectionString);
         await connection.OpenAsync(readToken);
 
         await using var isolation = connection.CreateCommand();
