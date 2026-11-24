@@ -571,7 +571,7 @@ public sealed class MonitoringTests
     private sealed class ConfigurationFixture(RuntimeConfiguration configuration) : IRuntimeConfigurationProvider
     {
         public RuntimeConfiguration Current { get; set; } = configuration;
-        public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null) => Current;
+        public RuntimeConfiguration GetValidated(DateTimeOffset? scheduleFrom = null) => Current;
     }
 
     private sealed class HttpFactory(HttpMessageHandler handler) : IHttpClientFactory

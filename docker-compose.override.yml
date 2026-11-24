@@ -90,7 +90,7 @@ services:
     network_mode: service:core
     environment:
       DOTNET_ENVIRONMENT: Development
-      Service__Enabled: ${ALTA_TEST_MONITORING:-false}
+      Service__Enabled: ${ALTA_TEST_MONITORING:-true}
       Core__BaseUrl: http://localhost:8080
       Core__Enabled: ${Core__Enabled:-false}
       Core__Email: ${Core__Email:-}
@@ -98,8 +98,6 @@ services:
       Databases__Targets__0__Name: reestr_1
       Databases__Targets__0__ConnectionString: >-
         ${ALTA_SQL_CONNECTION_STRING:-Server=mssql,1433;Database=reestr_1;User ID=logibooks;Password="${ALTA_DB_PASSWORD:-}";Encrypt=True;TrustServerCertificate=True}
-    stdin_open: true
-    tty: true
     cap_add: [SYS_PTRACE]
     depends_on:
       core:

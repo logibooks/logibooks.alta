@@ -29,14 +29,15 @@ public sealed class ConfigurationTests
     }
 
     [Test]
-    public void DisabledConsoleCanStartWithCoreSettingsThatItsCommandsWillReject()
+    public void DisabledConfiguration_ReportsInvalidCoreTimeout()
     {
         var core = ValidCore();
         core.RequestTimeoutSeconds = 0;
         var provider = CreateProvider(new ServiceOptions(), core, new DatabaseMonitoringOptions());
 
-        Assert.That(provider.GetValidated(allowDisabledConsole: true).Service.Enabled, Is.False);
-        Assert.That(() => provider.GetValidated(), Throws.TypeOf<RuntimeConfigurationException>());
+        var exception = Assert.Throws<RuntimeConfigurationException>(() => provider.GetValidated());
+
+        Assert.That(exception!.Errors, Is.EqualTo(new[] { "Core.RequestTimeoutSeconds must be between 1 and 300" }));
     }
 
     [Test]

@@ -31,4 +31,4 @@ internal sealed record AltaItemResult(
     [property: JsonRequired] string Outcome,
     string? Code = null, string? Message = null);
 
-internal sealed record AltaWorklistStatus(IReadOnlyList<string>? Cmrs, bool IsStale, string? Failure = null);
+internal sealed record AltaWorklistStatus(IReadOnlyList<string>? Cmrs, bool IsStale);
