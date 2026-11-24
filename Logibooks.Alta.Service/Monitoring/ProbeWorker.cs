@@ -16,7 +16,6 @@ internal sealed class ProbeWorker(
     IConfigurationReloadSignal reloadSignal,
     ILogger<ProbeWorker> logger,
     AltaMonitor? monitoring = null,
-    IAltaConsole? console = null,
     TimeProvider? clock = null) : BackgroundService
 {
     private bool? _lastEnabledState;
@@ -36,8 +35,7 @@ internal sealed class ProbeWorker(
             try
             {
                 // Only schedule admission requires another firing; an active cycle can be the last one.
-                configuration = configurationProvider.GetValidated(allowDisabledConsole: console is not null,
-                    scheduleFrom: schedulingClock.GetUtcNow());
+                configuration = configurationProvider.GetValidated(scheduleFrom: schedulingClock.GetUtcNow());
             }
             catch (RuntimeConfigurationException exception)
             {
@@ -52,10 +50,7 @@ internal sealed class ProbeWorker(
                 previous = null;
                 monitoring?.Clear();
                 LogStateChange(false);
-                if (console is null)
-                    await reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, stoppingToken);
-                else
-                    await RunConsoleUntilReloadAsync(console, stoppingToken);
+                await reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, stoppingToken);
                 continue;
             }
 
@@ -78,29 +73,6 @@ internal sealed class ProbeWorker(
                 continue;
             }
             await reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, stoppingToken);
-        }
-    }
-
-    private async Task RunConsoleUntilReloadAsync(IAltaConsole interactiveConsole, CancellationToken stoppingToken)
-    {
-        using var mode = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        var reload = reloadSignal.WaitAsync(Timeout.InfiniteTimeSpan, mode.Token);
-        var session = interactiveConsole.RunAsync(mode.Token, stoppingToken);
-        try
-        {
-            await Task.WhenAny(reload, session);
-        }
-        finally
-        {
-            await mode.CancelAsync();
-            try
-            {
-                await Task.WhenAll(reload, session);
-            }
-            catch (OperationCanceledException) when (mode.IsCancellationRequested)
-            {
-                // Reload or shutdown interrupted console input or a preflight read.
-            }
         }
     }
 

@@ -60,9 +60,9 @@ internal sealed class AltaCoreClient(
             _worklists[databaseName] = (GetWorklistIdentity(scope), new(result.Cmrs, false));
             return result.Cmrs;
         }
-        catch (Exception ex) when (!token.IsCancellationRequested)
+        catch (Exception) when (!token.IsCancellationRequested)
         {
-            MarkWorklistStale(scope, databaseName, ex);
+            MarkWorklistStale(scope, databaseName);
             throw;
         }
     }
@@ -94,7 +94,7 @@ internal sealed class AltaCoreClient(
         catch (CoreRequestException ex) when (ex.StatusCode == HttpStatusCode.Conflict &&
                                              ex.Code is "AltaCmrUnavailable" or "AltaScopeChanged")
         {
-            MarkWorklistStale(scope, databaseName, ex);
+            MarkWorklistStale(scope, databaseName);
             try
             {
                 await RefreshWorklistAsync(scope, databaseName, deadline.Token);
@@ -132,13 +132,13 @@ internal sealed class AltaCoreClient(
     private WorklistIdentity GetWorklistIdentity(CoreOptions scope) =>
         new(uris.GetAllowedBaseUri(scope.BaseUrl), scope.Email?.Trim() ?? string.Empty);
 
-    private void MarkWorklistStale(CoreOptions scope, string databaseName, Exception failure)
+    private void MarkWorklistStale(CoreOptions scope, string databaseName)
     {
         var identity = GetWorklistIdentity(scope);
         if (identity == GetWorklistIdentity(options.CurrentValue))
         {
             var cmrs = GetWorklistStatus(databaseName)?.Cmrs;
-            _worklists[databaseName] = (identity, new(cmrs, true, DescribeReadFailure(failure)));
+            _worklists[databaseName] = (identity, new(cmrs, true));
         }
     }
 

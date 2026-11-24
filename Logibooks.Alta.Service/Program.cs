@@ -74,11 +74,6 @@ internal static class ProgramEntry
         else
         {
             AddConsoleLogging(builder.Logging);
-            if (!Console.IsInputRedirected && !Console.IsOutputRedirected)
-            {
-                builder.Services.AddSingleton<IAltaConsoleTerminal, AltaConsoleTerminal>();
-                builder.Services.AddSingleton<IAltaConsole, AltaConsole>();
-            }
         }
 
         builder.Services

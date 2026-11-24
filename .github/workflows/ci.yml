@@ -81,7 +81,7 @@ jobs:
           $silent = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
           try {
             foreach ($attempt in 1..2) {
-              $install = Start-Process -FilePath $setup -ArgumentList "/ALLUSERS $silent" -WindowStyle Hidden -Wait -PassThru
+              $install = Start-Process -FilePath $setup -ArgumentList $silent -WindowStyle Hidden -Wait -PassThru
               if ($install.ExitCode -ne 0) { throw "Service setup failed with exit code $($install.ExitCode)." }
               $service = Get-Service -Name LogibooksAltaAdapter
               try {

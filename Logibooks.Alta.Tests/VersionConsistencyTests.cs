@@ -49,7 +49,7 @@ public sealed class VersionConsistencyTests
     }
 
     [Test]
-    public void Installer_UsesStableIdentityAndOffersBothInstallModes()
+    public void Installer_UsesStableIdentityAndRequiresServiceInstallation()
     {
         var root = FindRepositoryRoot();
         var installer = File.ReadAllText(Path.Combine(
@@ -61,10 +61,10 @@ public sealed class VersionConsistencyTests
         {
             Assert.That(installer, Does.Contain("AppId=Logibooks.Alta.Adapter"));
             Assert.That(installer, Does.Contain("AppVersion={#AppVersion}"));
-            Assert.That(installer, Does.Contain("PrivilegesRequired=lowest"));
-            Assert.That(installer, Does.Contain("PrivilegesRequiredOverridesAllowed=dialog"));
-            Assert.That(installer, Does.Contain("if (CurStep <> ssPostInstall) or not IsAdminInstallMode then"));
-            Assert.That(installer, Does.Contain("onlyifdoesntexist uninsneveruninstall"));
+            Assert.That(installer, Does.Contain("PrivilegesRequired=admin"));
+            Assert.That(installer, Does.Not.Contain("PrivilegesRequiredOverridesAllowed="));
+            Assert.That(installer, Does.Contain(@"DefaultDirName={commonpf64}\Logibooks\Alta"));
+            Assert.That(installer, Does.Contain("RunAdapter('/Install')"));
         });
     }
 

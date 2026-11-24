@@ -6,8 +6,6 @@ using System.Net;
 using System.Text.Json;
 using Logibooks.Alta.Configuration;
 using Logibooks.Alta.CoreApi;
-using Logibooks.Alta.Monitoring;
-using Microsoft.Extensions.Hosting;
 
 namespace Logibooks.Alta.Tests;
 
@@ -34,8 +32,7 @@ public sealed class AltaIntegrationTests
         scope = client.CaptureConfiguration();
         Assert.That(async () => await client.RefreshWorklistAsync(scope, target, CancellationToken.None),
             Throws.TypeOf<CoreRequestException>().With.Property(nameof(CoreRequestException.StatusCode)).EqualTo(HttpStatusCode.Forbidden));
-        Assert.That(client.GetWorklistStatus(target), Is.EqualTo(new AltaWorklistStatus(
-            client.GetWorklistStatus(target)!.Cmrs, true, "HTTP 403 (Denied)")));
+        Assert.That(client.GetWorklistStatus(target)!.IsStale, Is.True);
         Assert.That(client.GetWorklistStatus(target)!.Cmrs, Is.EqualTo(new[] { "CMR-1" }));
         Assert.That(await client.RefreshWorklistAsync(scope, target, CancellationToken.None), Is.Empty);
         Assert.That(client.GetWorklistStatus(target)!.IsStale, Is.False);
@@ -117,30 +114,6 @@ public sealed class AltaIntegrationTests
     }
 
     [Test]
-    public async Task ConsoleStopsCleanlyWhenShutdownCancelsSubmission()
-    {
-        using var lifetime = new TestLifetime();
-        using var handler = new RecordingHttpHandler((request, _, token) =>
-        {
-            if (request.Method == HttpMethod.Get)
-                return Task.FromResult(Reply("""{"cmrs":["CMR-1"]}"""));
-            lifetime.StopApplication();
-            return Task.FromCanceled<HttpResponseMessage>(token);
-        });
-        var terminal = new ScriptedTerminal("submit", "Alta", "CMR-1", "DEC-1", "00042", "10", "40", "",
-            "", "", "First item", "", "1", "10.00", "", "y");
-        var console = new AltaConsole(terminal, CreateClient(handler), new UnusedProbe(),
-            new TestOptionsMonitor<DatabaseMonitoringOptions>(new() { Targets = [new() { Name = "Alta" }] }),
-            new TestOptionsMonitor<ServiceOptions>(new()), lifetime);
-
-        await console.RunAsync(CancellationToken.None, lifetime.ApplicationStopping);
-
-        Assert.That(handler.Requests.Count(request => request.Method == HttpMethod.Post), Is.EqualTo(1));
-        Assert.That(terminal.Output, Has.None.Contains("timed out"));
-        Assert.That(terminal.Output, Has.None.Contains("outcome is unknown"));
-    }
-
-    [Test]
     public void ConflictRefreshesWorklistWithoutResendingBatch()
     {
         using var handler = new RecordingHttpHandler((_, call, _) => Task.FromResult(call == 1
@@ -197,60 +170,6 @@ public sealed class AltaIntegrationTests
         Assert.That(handler.Calls, Is.EqualTo(2));
     }
 
-    [TestCase("n", false)]
-    [TestCase("y", true)]
-    public async Task ConsolePreviewsAllGoodsAndRequiresConfirmationForOneDecision(string confirmation, bool sendsUpdate)
-    {
-        using var handler = new RecordingHttpHandler((request, _, _) => Task.FromResult(request.Method == HttpMethod.Get
-            ? Reply("""{"cmrs":["CMR-1"]}""")
-            : Reply("""{"cmrNumber":"CMR-1","decCode":"DEC-1","acceptedCount":1,"results":[{"index":0,"outcome":"applied"}]}""")));
-        var terminal = new ScriptedTerminal("submit", "Alta", "CMR-1", "DEC-1", "00042", "10", "40", "",
-            "dutiesAndTaxes", "125.50", "rub", "", "0.265",
-            "First item", "6105100000", "003.00", "10.00", "Second item", "", "1", ".05", "", confirmation, "status", "exit");
-        using var lifetime = new TestLifetime();
-        var console = new AltaConsole(terminal, CreateClient(handler), new UnusedProbe(),
-            new TestOptionsMonitor<DatabaseMonitoringOptions>(new() { Targets = [new() { Name = "Alta" }] }),
-            new TestOptionsMonitor<ServiceOptions>(new()), lifetime);
-
-        await console.RunAsync(CancellationToken.None, lifetime.ApplicationStopping);
-
-        Assert.That(lifetime.ApplicationStopping.IsCancellationRequested, Is.True);
-        Assert.That(terminal.Output, Has.Some.Contains("\"tnVed\": null"));
-        Assert.That(terminal.Output, Has.Some.Contains("\"description\": \"Second item\""));
-        Assert.That(handler.Requests.Count(request => request.Method == HttpMethod.Post), Is.EqualTo(sendsUpdate ? 1 : 0));
-        Assert.That(handler.Requests.Count(request => request.Method == HttpMethod.Get), Is.EqualTo(sendsUpdate ? 2 : 1));
-        if (sendsUpdate)
-        {
-            using var document = JsonDocument.Parse(handler.Requests.Last().Body!);
-            var item = document.RootElement.GetProperty("assignments").EnumerateArray().Single();
-            Assert.That(item.TryGetProperty("occurrence", out _), Is.False);
-            Assert.That(item.GetProperty("items").GetArrayLength(), Is.EqualTo(2));
-            Assert.That(item.GetProperty("items")[0].GetProperty("totalCost").GetDecimal(), Is.EqualTo(10.00m));
-            Assert.That(item.GetProperty("items")[0].GetProperty("quantity").GetDecimal(), Is.EqualTo(3m));
-            Assert.That(item.GetProperty("items")[1].GetProperty("totalCost").GetDecimal(), Is.EqualTo(0.05m));
-            Assert.That(item.GetProperty("payments")[0].GetProperty("currency").GetString(), Is.EqualTo("RUB"));
-            Assert.That(terminal.Output, Has.Some.Contains("applied (saved decisions: 1)"));
-        }
-    }
-
-    [TestCase("1.5")]
-    [TestCase("0.00")]
-    public async Task ConsoleRejectsQuantitiesThatAreNotPositiveWholeNumbers(string quantity)
-    {
-        using var handler = new RecordingHttpHandler((_, _, _) => Task.FromResult(Reply("""{"cmrs":["CMR-1"]}""")));
-        var terminal = new ScriptedTerminal("submit", "Alta", "CMR-1", "DEC-1", "00042", "10", "40", "", "", "",
-            "Товар", "", quantity, "exit");
-        using var lifetime = new TestLifetime();
-        var console = new AltaConsole(terminal, CreateClient(handler), new UnusedProbe(),
-            new TestOptionsMonitor<DatabaseMonitoringOptions>(new() { Targets = [new() { Name = "Alta" }] }),
-            new TestOptionsMonitor<ServiceOptions>(new()), lifetime);
-
-        await console.RunAsync(CancellationToken.None, lifetime.ApplicationStopping);
-
-        Assert.That(terminal.Output, Has.Some.Contains("Quantity must be a positive whole number."));
-        Assert.That(handler.Requests.Select(request => request.Method), Is.EqualTo(new[] { HttpMethod.Get }));
-    }
-
     private static AltaBatch Batch() => new("CMR-1", "DEC-1", [Item()]);
     private static AltaAssignment Item() => new("00042",
         [new("УИН:00012; Товар", "6105100000", 3, 10.00m), new("Другой товар", null, 1, 0)], new(10, "40"), []);
@@ -267,29 +186,5 @@ public sealed class AltaIntegrationTests
     private sealed class FreshHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
-    }
-
-    private sealed class ScriptedTerminal(params string[] lines) : IAltaConsoleTerminal
-    {
-        private readonly Queue<string> _lines = new(lines);
-        public List<string> Output { get; } = [];
-        public Task<string?> ReadLineAsync(string prompt, CancellationToken token) =>
-            Task.FromResult(_lines.TryDequeue(out var line) ? line : null);
-        public void WriteLine(string text) => Output.Add(text);
-    }
-
-    private sealed class UnusedProbe : ICoreApiProbe
-    {
-        public Task ProbeAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-    }
-
-    private sealed class TestLifetime : IHostApplicationLifetime, IDisposable
-    {
-        private readonly CancellationTokenSource _stopping = new();
-        public CancellationToken ApplicationStarted => CancellationToken.None;
-        public CancellationToken ApplicationStopping => _stopping.Token;
-        public CancellationToken ApplicationStopped => CancellationToken.None;
-        public void StopApplication() => _stopping.Cancel();
-        public void Dispose() => _stopping.Dispose();
     }
 }
