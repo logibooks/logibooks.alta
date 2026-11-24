@@ -232,71 +232,6 @@ public sealed class ProbeWorkerTests
         Assert.That(databaseProbe.Calls, Is.GreaterThanOrEqualTo(2));
     }
 
-    [Test]
-    public async Task ReloadSwitchesModesOnlyAfterThePreviousModeHasFinished()
-    {
-        using var signal = ConfigurationReloadSignalTests.CreateSignal(out var reload);
-        var disabled = ValidConfiguration(enabled: false);
-        var enabled = ValidConfiguration(enabled: true);
-        enabled.Core.Enabled = false;
-        var provider = new SequenceConfigurationProvider(disabled, enabled, disabled);
-        var probeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseProbe = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var databaseProbe = new TestMssqlProbe(async (_, token) =>
-        {
-            probeStarted.TrySetResult();
-            await releaseProbe.Task.WaitAsync(token);
-        });
-        var console = new SwitchingConsole();
-        using var worker = new ProbeWorker(provider, databaseProbe, new TestCoreProbe(), signal,
-            new ListLogger<ProbeWorker>(), console: console);
-        var deadline = TimeSpan.FromSeconds(3);
-
-        await worker.StartAsync(CancellationToken.None);
-        try
-        {
-            await console.Entered.Task.WaitAsync(deadline);
-            reload();
-            await console.Cancelled.Task.WaitAsync(deadline);
-            Assert.That(probeStarted.Task.IsCompleted, Is.False);
-            console.FinishSubmission.TrySetResult();
-            await probeStarted.Task.WaitAsync(deadline);
-
-            reload();
-            Assert.That(console.Reopened.Task.IsCompleted, Is.False);
-            releaseProbe.TrySetResult();
-            await console.Reopened.Task.WaitAsync(deadline);
-            Assert.That(databaseProbe.Calls, Is.EqualTo(1));
-        }
-        finally
-        {
-            console.FinishSubmission.TrySetResult();
-            releaseProbe.TrySetResult();
-            await worker.StopAsync(CancellationToken.None);
-        }
-    }
-
-    private sealed class SwitchingConsole : IAltaConsole
-    {
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource FinishSubmission { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Reopened { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public async Task RunAsync(CancellationToken modeToken, CancellationToken stoppingToken)
-        {
-            if (!Entered.TrySetResult())
-            {
-                Reopened.TrySetResult();
-                await Task.Delay(Timeout.InfiniteTimeSpan, modeToken);
-                return;
-            }
-
-            using var registration = modeToken.Register(() => Cancelled.TrySetResult());
-            await FinishSubmission.Task.WaitAsync(stoppingToken);
-        }
-    }
-
     private static ProbeWorker CreateWorker(
         RuntimeConfiguration configuration,
         IMssqlProbe databaseProbe,
@@ -329,7 +264,7 @@ public sealed class ProbeWorkerTests
     private sealed class StaticConfigurationProvider(RuntimeConfiguration configuration)
         : IRuntimeConfigurationProvider
     {
-        public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null) => configuration;
+        public RuntimeConfiguration GetValidated(DateTimeOffset? scheduleFrom = null) => configuration;
     }
 
     private sealed class SequenceConfigurationProvider(params RuntimeConfiguration[] configurations)
@@ -337,7 +272,7 @@ public sealed class ProbeWorkerTests
     {
         private int _index;
 
-        public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null)
+        public RuntimeConfiguration GetValidated(DateTimeOffset? scheduleFrom = null)
         {
             var index = Math.Min(Interlocked.Increment(ref _index) - 1, configurations.Length - 1);
             return configurations[index];

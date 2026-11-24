@@ -6,7 +6,7 @@ Logibooks Alta Adapter is a Windows application that monitors one or more Micros
 
 ## Runtime behavior
 
-- The self-contained x64 adapter runs as the `LogibooksAltaAdapter` Windows service under `LocalService` or as a console app under the current Windows account.
+- The self-contained x64 adapter installs as the `LogibooksAltaAdapter` Windows service and runs under `LocalService`.
 - Production SQL Server instances and databases remain external and are not installed or managed by the adapter.
 - In development, run the adapter on Windows with SQL Server 2025 and Adminer in Docker Desktop's Linux containers.
 - Quartz runs an initial cycle on enabled startup, then follows the configured cron and time zone. A running cycle causes overlapping firings to be skipped.
@@ -40,16 +40,13 @@ The `win-x64` profile publishes `Logibooks.Alta.Adapter.exe` under `bin\Release\
 
 ## Production installation and configuration
 
-Open `Logibooks.Alta.Adapter.Setup.exe` and choose the installation mode.
+Run `Logibooks.Alta.Adapter.Setup.exe` with administrator privileges. Setup installs the service under `%ProgramFiles%\Logibooks\Alta` and starts it automatically. For unattended installation, use `/VERYSILENT /NORESTART` from an elevated prompt.
 
-- **Console app** installs for your Windows account without elevation. In the Start menu's **Logibooks** folder, use **Open Alta adapter configuration** to open `%LOCALAPPDATA%\Logibooks\Alta\appsettings.json`, then select **Start Alta adapter in console mode**. An attached console opens the interactive prompt when `Service.Enabled` is `false`. Set it to `true` to switch to monitoring output. Windows service and redirected runs are unattended.
-- **Windows service** requests administrator credentials, installs under `%ProgramFiles%\Logibooks\Alta`, and starts automatically under `LocalService`. Edit `%ProgramData%\Logibooks\Alta\appsettings.json` as an administrator. Administrators and SYSTEM receive full access, and `LocalService` receives read access. If an older MSI-based service is installed, uninstall it from **Installed apps** before choosing this mode.
+If an older MSI-based service or per-user Alta installation is present, uninstall it from **Installed apps** before running Setup. To reuse settings from a per-user installation, transfer the values you need from `%LOCALAPPDATA%\Logibooks\Alta\appsettings.json` into the provisioned service configuration.
 
-Both modes preserve their configuration during upgrades and uninstall. For unattended installation, use `/CURRENTUSER /VERYSILENT /NORESTART` for console mode or `/ALLUSERS /VERYSILENT /NORESTART` from an elevated prompt for service mode.
+Edit `%ProgramData%\Logibooks\Alta\appsettings.json` as an administrator. Administrators and SYSTEM receive full access, and `LocalService` receives read access. Setup preserves the service configuration during upgrades and uninstall.
 
-At the `alta>` prompt, use `login` to verify that the configured Core account can sign in, `worklist [database]` to list CMRs, and `submit` to enter and preview one customs decision for a parcel number. Add all goods before submitting. Each goods entry has a description, optional TN VED, quantity, and total cost for that quantity. Type `y` at the confirmation prompt to send it. `status` shows recent Core results. `help` lists commands and `exit` stops the adapter. Configuration reload switches between the prompt and monitoring after any in-flight operation finishes or times out.
-
-Windows installations write rolling logs under `%ProgramData%\Logibooks\Alta\Logs` for the service and `%LOCALAPPDATA%\Logibooks\Alta\Logs` for the console app. Log files rotate daily or at 10 MiB, with up to 14 files retained. Use `Logging:LogLevel` to set severity and `Logging:File:Enabled` to toggle file logging. `Logging:File:Directory` accepts an absolute path or a path relative to `appsettings.json`. A custom service log directory must grant `LocalService` modify access. Restart the adapter after changing file logging settings.
+The service writes rolling logs under `%ProgramData%\Logibooks\Alta\Logs`. Log files rotate daily or at 10 MiB, with up to 14 files retained. Use `Logging:LogLevel` to set severity and `Logging:File:Enabled` to toggle file logging. `Logging:File:Directory` accepts an absolute path or a path relative to `appsettings.json`. A custom service log directory must grant `LocalService` modify access. Restart the adapter after changing file logging settings.
 
 An existing 0.1.0 configuration using `ConnectionStrings.AltaDatabase` must be updated to the `Databases` format before enabling probes.
 
@@ -88,7 +85,7 @@ An existing 0.1.0 configuration using `ConnectionStrings.AltaDatabase` must be u
 
 Target names must be nonempty and unique among enabled targets. Enabled targets need valid SQL connection strings. `Databases.MaxConcurrentProbes` accepts 1–32 and defaults to 4. When `Service.Enabled` is true, at least one database target must be enabled. Core URL and credentials are required only when both `Service.Enabled` and `Core.Enabled` are true. Core defaults to enabled. The Core account must have the `adapter-alta` role to fetch worklists and submit parcel changes. For Core integration, set each enabled target's `Name` to match an entry in Core's `AltaMonitoring:DatabaseNames`, including case. Core returns an empty worklist when the name has no match.
 
-Set `Service.Enabled` to true only after configuration is valid. In service mode, operational events appear in **Event Viewer → Windows Logs → Application** with source `Logibooks Alta Adapter`.
+Set `Service.Enabled` to true only after configuration is valid. While disabled, the adapter waits for configuration changes. Windows service events appear in **Event Viewer → Windows Logs → Application** with source `Logibooks Alta Adapter`.
 
 The full configuration file can be overridden with `LOGIBOOKS_ALTA_CONFIG_PATH`. Without the override, the default is ProgramData on Windows and `/etc/logibooks/alta/appsettings.json` on Linux.
 
@@ -131,7 +128,7 @@ Open [Adminer](http://localhost:8083) and choose the connection for the database
 | PostgreSQL | `db` | `logibooks` | `postgres` | Existing Core development PostgreSQL password |
 | MS SQL | `mssql` | `reestr_1` | `logibooks` | `ALTA_DB_PASSWORD` in `.env` |
 
-Alta starts in CLI mode by default. Attach a terminal with `docker compose attach alta` and detach with Ctrl+P, Ctrl+Q. Set `ALTA_TEST_MONITORING=true` in `.env` and start the stack again to run background monitoring. To stop the stack and retain both databases, run `docker compose down`.
+Alta starts monitoring by default. To pause monitoring, set `ALTA_TEST_MONITORING=false` in `.env` and run `docker compose up -d` again. Follow the adapter's output with `docker compose logs -f alta`. To stop the stack and retain both databases, run `docker compose down`.
 
 ### Visual Studio Docker Compose project
 

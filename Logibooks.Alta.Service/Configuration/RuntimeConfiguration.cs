@@ -26,7 +26,7 @@ internal sealed record RuntimeDatabaseTarget(string Name, string ConnectionStrin
 
 internal interface IRuntimeConfigurationProvider
 {
-    RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null);
+    RuntimeConfiguration GetValidated(DateTimeOffset? scheduleFrom = null);
 }
 
 internal sealed class RuntimeConfigurationProvider : IRuntimeConfigurationProvider, IDisposable
@@ -61,7 +61,7 @@ internal sealed class RuntimeConfigurationProvider : IRuntimeConfigurationProvid
         ];
     }
 
-    public RuntimeConfiguration GetValidated(bool allowDisabledConsole = false, DateTimeOffset? scheduleFrom = null)
+    public RuntimeConfiguration GetValidated(DateTimeOffset? scheduleFrom = null)
     {
         ServiceOptions service;
         CoreOptions core;
@@ -80,23 +80,19 @@ internal sealed class RuntimeConfigurationProvider : IRuntimeConfigurationProvid
             revision = new MonitoringRevision(_globalRevision,
                 _sources.ToDictionary(pair => pair.Key, pair => pair.Value.Revision, StringComparer.Ordinal));
         }
-        var validate = service.Enabled || !allowDisabledConsole;
         var errors = new List<string>();
 
-        if (validate)
-        {
-            var cron = service.MonitoringCron?.Trim() ?? "";
-            var hasCron = CronExpression.IsValidExpression(cron);
-            if (!hasCron)
-                errors.Add("Service.MonitoringCron must be a valid Quartz cron expression");
-            if (!TimeZoneInfo.TryFindSystemTimeZoneById(service.MonitoringTimeZone?.Trim() ?? "", out var zone))
-                errors.Add("Service.MonitoringTimeZone must identify a time zone available on this host");
-            else if (hasCron && scheduleFrom is { } from &&
-                new CronExpression(cron) { TimeZone = zone }.GetNextValidTimeAfter(from) is null)
-                errors.Add("Service.MonitoringCron must schedule a future firing");
-        }
+        var cron = service.MonitoringCron?.Trim() ?? "";
+        var hasCron = CronExpression.IsValidExpression(cron);
+        if (!hasCron)
+            errors.Add("Service.MonitoringCron must be a valid Quartz cron expression");
+        if (!TimeZoneInfo.TryFindSystemTimeZoneById(service.MonitoringTimeZone?.Trim() ?? "", out var zone))
+            errors.Add("Service.MonitoringTimeZone must identify a time zone available on this host");
+        else if (hasCron && scheduleFrom is { } from &&
+            new CronExpression(cron) { TimeZone = zone }.GetNextValidTimeAfter(from) is null)
+            errors.Add("Service.MonitoringCron must schedule a future firing");
 
-        if (validate && databases.MaxConcurrentProbes is < 1 or > 32)
+        if (databases.MaxConcurrentProbes is < 1 or > 32)
         {
             errors.Add("Databases.MaxConcurrentProbes must be between 1 and 32");
         }
@@ -126,12 +122,12 @@ internal sealed class RuntimeConfigurationProvider : IRuntimeConfigurationProvid
             }
         }
 
-        if (validate && core.RequestTimeoutSeconds is < 1 or > 300)
+        if (core.RequestTimeoutSeconds is < 1 or > 300)
         {
             errors.Add("Core.RequestTimeoutSeconds must be between 1 and 300");
         }
 
-        if (validate && core.JwtRefreshSkewMinutes is < 0 or > 1_440)
+        if (core.JwtRefreshSkewMinutes is < 0 or > 1_440)
         {
             errors.Add("Core.JwtRefreshSkewMinutes must be between 0 and 1440");
         }
