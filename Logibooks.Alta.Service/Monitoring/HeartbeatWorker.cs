@@ -71,19 +71,46 @@ internal sealed class HeartbeatWorker(
         {
             token.ThrowIfCancellationRequested();
             var started = clock.GetTimestamp();
-            var hasSession = sessions.TryGetHeartbeatInterval(scope, out var interval);
-            var cadence = hasSession && interval is null
-                ? RecheckDelay
-                : await SendAsync(scope, interval, started, token);
+            var session = sessions.GetHeartbeatSession(scope);
+            if (session is { HasUnexpiredToken: true, IntervalSeconds: null })
+            {
+                await WaitForNextAttemptAsync(RecheckDelay, session.IntervalChanged, token);
+                continue;
+            }
+
+            var routeUnavailable = await SendAsync(scope, session.IntervalSeconds, started, token);
+            var current = sessions.GetHeartbeatSession(scope);
+            var cadence = current.IntervalSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : RecheckDelay;
+            if (routeUnavailable && cadence < RecheckDelay)
+                cadence = RecheckDelay;
 
             // Choose the first future tick after the attempt. Elapsed ticks have no work queued.
             var elapsed = clock.GetElapsedTime(started);
             var delay = cadence - TimeSpan.FromTicks(elapsed.Ticks % cadence.Ticks);
-            await Task.Delay(delay, clock, token);
+            if (routeUnavailable)
+            {
+                // Reauthorization does not shorten the retry window for an unavailable route.
+                await Task.Delay(delay, clock, token);
+            }
+            else
+            {
+                // Another caller can negotiate a different cadence while this worker is asleep.
+                await WaitForNextAttemptAsync(delay, current.IntervalChanged, token);
+            }
         }
     }
 
-    private async Task<TimeSpan> SendAsync(CoreOptions scope, int? interval, long started, CancellationToken token)
+    private async Task WaitForNextAttemptAsync(TimeSpan delay, Task intervalChanged, CancellationToken token)
+    {
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var tick = Task.Delay(delay, clock, wait.Token);
+        if (await Task.WhenAny(tick, intervalChanged) == tick)
+            await tick;
+        else
+            await wait.CancelAsync();
+    }
+
+    private async Task<bool> SendAsync(CoreOptions scope, int? interval, long started, CancellationToken token)
     {
         var timeoutSeconds = interval is { } seconds
             ? Math.Min(scope.RequestTimeoutSeconds, seconds / 2.0)
@@ -127,9 +154,7 @@ internal sealed class HeartbeatWorker(
         }
 
         token.ThrowIfCancellationRequested();
-        sessions.TryGetHeartbeatInterval(scope, out var currentInterval);
-        var cadence = currentInterval is { } current ? TimeSpan.FromSeconds(current) : RecheckDelay;
-        return routeUnavailable && cadence < RecheckDelay ? RecheckDelay : cadence;
+        return routeUnavailable;
     }
 
     private void Warn(string message)

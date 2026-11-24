@@ -381,7 +381,7 @@ public sealed class JwtSessionHandlerTests
 
     private sealed class StubSessionManager(params string[] tokens) : ICoreSessionManager
     {
-        public bool TryGetHeartbeatInterval(CoreOptions options, out int? intervalSeconds) =>
+        public HeartbeatSession GetHeartbeatSession(CoreOptions options) =>
             throw new NotSupportedException();
 
         private readonly Queue<string> _tokens = new(tokens);

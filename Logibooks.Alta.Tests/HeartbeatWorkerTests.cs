@@ -69,6 +69,55 @@ public sealed class HeartbeatWorkerTests
         Assert.That(fixture.Heartbeats.Calls, Is.EqualTo(4));
     }
 
+    [TestCase("5", 5, 2)]
+    [TestCase(null, 60, 1)]
+    public async Task OtherCoreCallerChangingTheIntervalWakesTheWorker(
+        string? renewedInterval, int nextDelaySeconds, int expectedHeartbeats)
+    {
+        await using var fixture = new Fixture(loginInterval: call => call == 1 ? "600" : renewedInterval,
+            jwtLifetime: call => call == 1 ? TimeSpan.FromSeconds(310) : TimeSpan.FromHours(1));
+        await fixture.StartAsync();
+        await fixture.Clock.WaitForDelayAsync(TimeSpan.FromSeconds(600));
+        Assert.That(fixture.Heartbeats.Calls, Is.EqualTo(1));
+
+        fixture.Clock.Advance(TimeSpan.FromSeconds(10));
+        await fixture.Sessions.GetTokenAsync(CancellationToken.None);
+        await fixture.Clock.WaitForDelayAsync(TimeSpan.FromSeconds(nextDelaySeconds));
+        Assert.That(fixture.Login.Calls, Is.EqualTo(2));
+        Assert.That(fixture.Heartbeats.Calls, Is.EqualTo(expectedHeartbeats));
+    }
+
+    [Test]
+    public async Task OtherCoreCallerEnablingHeartbeatsWakesALegacyWait()
+    {
+        await using var fixture = new Fixture(loginInterval: call => call == 1 ? null : "600",
+            jwtLifetime: call => call == 1 ? TimeSpan.FromSeconds(310) : TimeSpan.FromHours(1));
+        await fixture.StartAsync();
+        await fixture.Clock.WaitForDelayAsync(TimeSpan.FromMinutes(1));
+        Assert.That(fixture.Heartbeats.Calls, Is.Zero);
+
+        fixture.Clock.Advance(TimeSpan.FromSeconds(10));
+        await fixture.Sessions.GetTokenAsync(CancellationToken.None);
+        await fixture.Clock.WaitForDelayAsync(TimeSpan.FromSeconds(600));
+        Assert.That(fixture.Login.Calls, Is.EqualTo(2));
+        Assert.That(fixture.Heartbeats.Calls, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task OtherCoreCallerRenewingTheSameIntervalKeepsTheScheduledTick()
+    {
+        await using var fixture = new Fixture(loginInterval: _ => "600",
+            jwtLifetime: call => call == 1 ? TimeSpan.FromSeconds(310) : TimeSpan.FromHours(1));
+        await fixture.StartAsync();
+        await fixture.Clock.WaitForDelayAsync(TimeSpan.FromSeconds(600));
+
+        fixture.Clock.Advance(TimeSpan.FromSeconds(10));
+        await fixture.Sessions.GetTokenAsync(CancellationToken.None);
+        await fixture.Clock.WaitForDelayAsync(TimeSpan.FromSeconds(590));
+        Assert.That(fixture.Login.Calls, Is.EqualTo(2));
+        Assert.That(fixture.Heartbeats.Calls, Is.EqualTo(1));
+    }
+
     [Test]
     public async Task SendsWhileTheInitialSqlProbeIsBlocked()
     {
@@ -234,6 +283,26 @@ public sealed class HeartbeatWorkerTests
 
         fixture.Clock.Advance(TimeSpan.FromSeconds(delaySeconds));
         await fixture.Clock.WaitForDelayAsync(TimeSpan.FromSeconds(5));
+        Assert.That(fixture.Heartbeats.Calls, Is.EqualTo(2));
+    }
+
+    [Test]
+    public async Task IntervalChangeDoesNotBypassTheUnavailableRouteRetryWindow()
+    {
+        await using var fixture = new Fixture(loginInterval: call => call == 1 ? "5" : "10",
+            jwtLifetime: call => call == 1 ? TimeSpan.FromSeconds(301) : TimeSpan.FromHours(1),
+            send: (call, _) => Task.FromResult(call == 1 ? HttpStatusCode.NotFound : HttpStatusCode.NoContent));
+        await fixture.StartAsync();
+        await fixture.Clock.WaitForDelayAsync(TimeSpan.FromSeconds(60));
+
+        fixture.Clock.Advance(TimeSpan.FromSeconds(1));
+        await fixture.Sessions.GetTokenAsync(CancellationToken.None);
+        await fixture.Clock.WaitForDelayAsync(TimeSpan.FromSeconds(59));
+        Assert.That(fixture.Login.Calls, Is.EqualTo(2));
+        Assert.That(fixture.Heartbeats.Calls, Is.EqualTo(1));
+
+        fixture.Clock.Advance(TimeSpan.FromSeconds(59));
+        await fixture.Clock.WaitForDelayAsync(TimeSpan.FromSeconds(10));
         Assert.That(fixture.Heartbeats.Calls, Is.EqualTo(2));
     }
 

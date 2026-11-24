@@ -16,9 +16,11 @@ internal interface ICoreSessionManager
 {
     Task<string> GetTokenAsync(CancellationToken cancellationToken, CoreOptions? options = null,
         Action<int>? observeHeartbeatInterval = null);
-    bool TryGetHeartbeatInterval(CoreOptions options, out int? intervalSeconds);
+    HeartbeatSession GetHeartbeatSession(CoreOptions options);
     void InvalidateToken(string token);
 }
+
+internal readonly record struct HeartbeatSession(bool HasUnexpiredToken, int? IntervalSeconds, Task IntervalChanged);
 
 internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
 {
@@ -30,6 +32,9 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
     private readonly ILogger<CoreSessionManager> _logger;
     private readonly CoreUris _coreUris;
     private readonly SemaphoreSlim _loginLock = new(1, 1);
+    private readonly object _heartbeatGate = new();
+    private TaskCompletionSource _heartbeatIntervalChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int? _lastPublishedHeartbeatInterval;
     private TokenState? _tokenState;
 
     public CoreSessionManager(
@@ -64,19 +69,17 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
         return session.Token;
     }
 
-    public bool TryGetHeartbeatInterval(CoreOptions options, out int? intervalSeconds)
+    public HeartbeatSession GetHeartbeatSession(CoreOptions options)
     {
         EnsureCurrent(options);
-        var session = Volatile.Read(ref _tokenState);
-        if (session is not null && ReferenceEquals(session.Options, options)
-            && session.ExpiresAtUtc > _timeProvider.GetUtcNow())
+        lock (_heartbeatGate)
         {
-            intervalSeconds = session.HeartbeatIntervalSeconds;
-            return true;
+            var session = Volatile.Read(ref _tokenState);
+            var unexpired = session is not null && ReferenceEquals(session.Options, options)
+                && session.ExpiresAtUtc > _timeProvider.GetUtcNow();
+            return new HeartbeatSession(unexpired, unexpired ? session!.HeartbeatIntervalSeconds : null,
+                _heartbeatIntervalChanged.Task);
         }
-
-        intervalSeconds = null;
-        return false;
     }
 
     private async Task<TokenState> GetSessionAsync(CoreOptions options, CancellationToken cancellationToken)
@@ -100,13 +103,28 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
 
             var token = await LoginAsync(options, cancellationToken);
             EnsureCurrent(options);
-            Volatile.Write(ref _tokenState, token);
+            PublishSession(token);
             _logger.LogInformation("A Logibooks Core JWT session was established");
             return token;
         }
         finally
         {
             _loginLock.Release();
+        }
+    }
+
+    private void PublishSession(TokenState session)
+    {
+        lock (_heartbeatGate)
+        {
+            Volatile.Write(ref _tokenState, session);
+            if (session.HeartbeatIntervalSeconds == _lastPublishedHeartbeatInterval)
+                return;
+
+            _lastPublishedHeartbeatInterval = session.HeartbeatIntervalSeconds;
+            var previous = _heartbeatIntervalChanged;
+            _heartbeatIntervalChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            previous.TrySetResult();
         }
     }
 
