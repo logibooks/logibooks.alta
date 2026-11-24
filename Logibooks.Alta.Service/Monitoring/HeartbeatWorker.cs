@@ -56,9 +56,10 @@ internal sealed class HeartbeatWorker(
                 await RunCadenceAsync(scope, token);
             }
         }
-        catch (CoreConfigurationException exception) when (!token.IsCancellationRequested)
+        catch (CoreConfigurationException exception)
         {
-            Warn(exception.Message);
+            if (!token.IsCancellationRequested)
+                Warn(exception.Message);
         }
 
         await Task.Delay(Timeout.InfiniteTimeSpan, token);

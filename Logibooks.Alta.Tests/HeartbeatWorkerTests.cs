@@ -251,8 +251,19 @@ public sealed class HeartbeatWorkerTests
                 var entered = call == 1 ? firstStarted : nextStarted;
                 var stopped = call == 1 ? firstStopped : nextStopped;
                 entered.TrySetResult();
-                try { await Task.Delay(Timeout.InfiniteTimeSpan, token); }
-                finally { stopped.TrySetResult(); }
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                }
+                catch (OperationCanceledException) when (call == 1)
+                {
+                    // A session check can report stale configuration after the old request is cancelled.
+                    throw new CoreConfigurationException("Core configuration changed.");
+                }
+                finally
+                {
+                    stopped.TrySetResult();
+                }
             }
             return HttpStatusCode.NoContent;
         });
