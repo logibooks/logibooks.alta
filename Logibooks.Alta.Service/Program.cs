@@ -98,6 +98,7 @@ internal static class ProgramEntry
         builder.Services.AddSingleton<IAltaSource, AltaSqlSource>();
         builder.Services.AddSingleton<AltaMonitor>();
         builder.Services.AddHostedService<ProbeWorker>();
+        builder.Services.AddHostedService<HeartbeatWorker>();
 
         builder.Services
             .AddHttpClient(HttpClientNames.Authentication, client => client.Timeout = Timeout.InfiniteTimeSpan)
