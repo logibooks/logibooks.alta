@@ -106,31 +106,11 @@ internal sealed class RuntimeConfigurationProvider : IRuntimeConfigurationProvid
 
             ValidateDatabases(enabledDatabases, errors);
 
-            if (core.Enabled && _coreUris.GetAllowedBaseUri(core.BaseUrl) is null)
-            {
-                errors.Add(_coreUris.BaseUrlError);
-            }
-
-            if (core.Enabled && string.IsNullOrWhiteSpace(core.Email))
-            {
-                errors.Add("Core.Email is required when the service is enabled");
-            }
-
-            if (core.Enabled && string.IsNullOrWhiteSpace(core.Password))
-            {
-                errors.Add("Core.Password is required when the service is enabled");
-            }
+            if (core.Enabled)
+                errors.AddRange(core.ConnectionErrors(_coreUris));
         }
 
-        if (core.RequestTimeoutSeconds is < 1 or > 300)
-        {
-            errors.Add("Core.RequestTimeoutSeconds must be between 1 and 300");
-        }
-
-        if (core.JwtRefreshSkewMinutes is < 0 or > 1_440)
-        {
-            errors.Add("Core.JwtRefreshSkewMinutes must be between 0 and 1440");
-        }
+        errors.AddRange(core.TimeoutErrors());
 
         if (errors.Count != 0)
         {
