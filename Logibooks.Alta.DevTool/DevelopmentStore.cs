@@ -98,8 +98,8 @@ internal sealed class DevelopmentStore(SqlConnection connection, SqlTransaction 
             selected.Select(parcel => (parcel.Id, ReadSource(parcel, cmr))));
         await InsertDocumentAsync(id, DeclarationType, xml, number);
         await using var insert = Command("""
-            INSERT dbo.ExpressCargoDeclarationList (DOCGID, AviaNum, RegNum, CustomsModeCode)
-            VALUES (@id, @cmr, @number, @procedure);
+            INSERT dbo.ExpressCargoDeclarationList (DOCGID, AviaNum, Num, RegNum, CustomsModeCode)
+            VALUES (@id, @cmr, @number, @number, @procedure);
             """, ("@id", id), ("@cmr", cmr), ("@number", number), ("@procedure", procedure));
         await insert.ExecuteNonQueryAsync();
         await using var link = Command("UPDATE dbo.IndPostList SET REESTRGID=@reference WHERE DOCGID=@id;",
