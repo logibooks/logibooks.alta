@@ -10,7 +10,7 @@ using Microsoft.Data.SqlClient;
 
 namespace Logibooks.Alta.Database;
 
-internal sealed record AltaDeclaration(Guid Id, string? Code, string? Procedure, string? Status, int? ElectronicStatus);
+internal sealed record AltaDeclaration(Guid Id, string? Number, string? Procedure);
 
 internal sealed record AltaParcel(
     Guid Id, string Number, string? DeclarationReference, string? Decision, decimal? WeightKg);
@@ -37,9 +37,8 @@ internal sealed class AltaSqlSource : IAltaSource
         Enumerable.Range(char.MinValue, char.MaxValue + 1).Select(value => (char)value).Where(char.IsWhiteSpace).ToArray());
 
     private const string SnapshotSql = """
-        SELECT e.AviaNum, e.DOCGID, e.RegNum, d.REGNUM, e.CustomsModeCode, d.STATUS, d.EDSTAT
+        SELECT e.AviaNum, e.DOCGID, e.Num, e.CustomsModeCode
         FROM dbo.ExpressCargoDeclarationList AS e
-        LEFT JOIN dbo.Docs AS d ON d.GID = e.DOCGID
         WHERE EXISTS (
             SELECT 1 FROM OPENJSON(@keys) AS k
             WHERE k.[value] COLLATE DATABASE_DEFAULT = TRIM(@whitespace FROM CONVERT(nvarchar(4000), e.AviaNum))
@@ -94,9 +93,7 @@ internal sealed class AltaSqlSource : IAltaSource
             if (!declarations.TryGetValue(ReadText(reader, 0)?.Trim() ?? "", out var rows))
                 continue;
             var id = reader.GetGuid(1);
-            rows.Add(id, new AltaDeclaration(id, FirstText(ReadText(reader, 2), ReadText(reader, 3)),
-                ReadText(reader, 4)?.Trim(), ReadText(reader, 5),
-                reader.IsDBNull(6) ? null : reader.GetInt32(6)));
+            rows.Add(id, new AltaDeclaration(id, ReadText(reader, 2)?.Trim(), ReadText(reader, 3)?.Trim()));
         }
 
         await reader.NextResultAsync(token);
@@ -158,9 +155,6 @@ internal sealed class AltaSqlSource : IAltaSource
 
     private static string? ReadText(SqlDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
-
-    private static string? FirstText(string? first, string? second) =>
-        !string.IsNullOrWhiteSpace(first) ? first.Trim() : string.IsNullOrWhiteSpace(second) ? null : second.Trim();
 
     private sealed record RegisterRows(
         string Cmr, Dictionary<Guid, AltaDeclaration> Declarations, Dictionary<Guid, AltaParcel> Parcels);
