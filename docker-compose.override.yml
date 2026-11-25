@@ -91,6 +91,7 @@ services:
     environment:
       DOTNET_ENVIRONMENT: Development
       Service__Enabled: ${ALTA_TEST_MONITORING:-true}
+      Service__MonitoringCron: ${ALTA_TEST_MONITORING_CRON:-0/15 * * * * ?}
       Core__BaseUrl: http://localhost:8080
       Core__Enabled: ${Core__Enabled:-false}
       Core__Email: ${Core__Email:-}
@@ -103,8 +104,8 @@ services:
       core:
         condition: service_healthy
         restart: true
-      mssql:
-        condition: service_healthy
+      mssql-init:
+        condition: service_completed_successfully
 
 volumes:
   integration-images:

@@ -1,0 +1,8 @@
+**
+!Directory.Build.props
+!Directory.Packages.props
+!global.json
+!Logibooks.Alta.DevTool/
+!Logibooks.Alta.DevTool/**
+**/bin
+**/obj

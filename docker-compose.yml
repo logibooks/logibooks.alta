@@ -4,6 +4,14 @@
 
 name: logibooks-alta
 
+x-alta-development-backup: &alta-development-backup
+  type: bind
+  source: ${ALTA_DEV_BASELINE_BAK:-./.local/alta/reestr_1-dev.bak}
+  target: /baseline/reestr_1.bak
+  read_only: true
+  bind:
+    create_host_path: false
+
 services:
   mssql:
     image: mcr.microsoft.com/mssql/server:2025-CU7-ubuntu-24.04
@@ -15,24 +23,41 @@ services:
     ports:
       - "127.0.0.1:${MSSQL_PORT:-1433}:1433"
     volumes:
-      - sql-state:/var/opt/mssql
-      - type: bind
-        source: ${ALTA_REESTR_DIR:-D:/Projects/logibooks/AltaDB/reestr_1_1}
-        target: /database
-        bind:
-          create_host_path: false
+      - sql-dev-state:/var/opt/mssql
+      - *alta-development-backup
     healthcheck:
       test:
         - CMD-SHELL
         - >-
           SQLCMDPASSWORD="$${MSSQL_SA_PASSWORD}"
-          sqlcmd -S localhost -U sa -d reestr_1
+          sqlcmd -S localhost -U sa -d master
           -C -b -Q "SELECT 1" -o /dev/null
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 30s
     restart: unless-stopped
+
+  mssql-init:
+    build:
+      context: .
+      dockerfile: integration/DevTool.Dockerfile
+    command: [initialize]
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in .env}
+      ALTA_DB_PASSWORD: ${ALTA_DB_PASSWORD:-}
+      ALTA_DEV_WRITER_PASSWORD: ${ALTA_DEV_WRITER_PASSWORD:-}
+    volumes:
+      # SQL Server reads its own backup mount. The initializer reads the manifest.
+      - type: bind
+        source: ${ALTA_DEV_BASELINE_BAK:-./.local/alta/reestr_1-dev.bak}.manifest.json
+        target: /baseline/reestr_1.bak.manifest.json
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      mssql:
+        condition: service_healthy
 
   adminer:
     image: adminer:5.5.0-standalone
@@ -41,11 +66,9 @@ services:
     ports:
       - "127.0.0.1:${ADMINER_PORT:-8083}:8080"
     depends_on:
-      mssql:
-        condition: service_healthy
+      mssql-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:
-  sql-state:
-    external: true
-    name: ${ALTA_SQL_STATE_VOLUME:-alta-reestr-1-1-sql-state}
+  sql-dev-state:
