@@ -8,6 +8,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Logibooks.Alta.Tests", "Log
 EndProject
 Project("{E53339B2-1760-4266-BCC7-CA923CBCF16C}") = "docker-compose", "docker-compose.dcproj", "{2EC3DB01-C8A6-4FEB-B49F-92F54305AE5B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Logibooks.Alta.DevTool", "Logibooks.Alta.DevTool\Logibooks.Alta.DevTool.csproj", "{9C4D34EC-17FE-401D-B862-17B4AAB4E783}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,6 +28,10 @@ Global
 		{2EC3DB01-C8A6-4FEB-B49F-92F54305AE5B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{2EC3DB01-C8A6-4FEB-B49F-92F54305AE5B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{2EC3DB01-C8A6-4FEB-B49F-92F54305AE5B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9C4D34EC-17FE-401D-B862-17B4AAB4E783}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9C4D34EC-17FE-401D-B862-17B4AAB4E783}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9C4D34EC-17FE-401D-B862-17B4AAB4E783}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9C4D34EC-17FE-401D-B862-17B4AAB4E783}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

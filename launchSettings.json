@@ -9,6 +9,7 @@
       "serviceActions": {
         "db": "StartWithoutDebugging",
         "mssql": "StartWithoutDebugging",
+        "mssql-init": "StartWithoutDebugging",
         "adminer": "StartWithoutDebugging",
         "core": "StartWithoutDebugging",
         "ui": "StartWithoutDebugging",
@@ -21,6 +22,7 @@
       "composeLaunchAction": "None",
       "serviceActions": {
         "mssql": "StartWithoutDebugging",
+        "mssql-init": "StartWithoutDebugging",
         "adminer": "StartWithoutDebugging"
       }
     },
@@ -32,6 +34,7 @@
       "composeLaunchUrl": "{Scheme}://localhost:{ServicePort}",
       "serviceActions": {
         "mssql": "StartWithoutDebugging",
+        "mssql-init": "StartWithoutDebugging",
         "adminer": "StartWithoutDebugging"
       }
     }
