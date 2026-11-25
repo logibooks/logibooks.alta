@@ -21,6 +21,23 @@ internal static class DevelopmentDatabase
     private sealed record DatabaseFile(string LogicalName, string Type, long Size);
     private sealed record Manifest(int Version, string Sha256, DatabaseFile[] Files);
 
+    public static async Task<string> InspectSourceAsync()
+    {
+        await using var source = new SqlConnection(Program.EnvironmentValue("ALTA_SOURCE_CONNECTION_STRING"));
+        await source.OpenAsync();
+        await using var command = new SqlCommand("""
+            SELECT name, collation_name, compatibility_level FROM sys.databases WHERE database_id=DB_ID();
+            """, source);
+        await using var reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync() || !reader.GetString(0).Equals(Name, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"The source connection must select {Name}.");
+
+        var collation = reader.GetString(1);
+        if (!collation.Equals("Cyrillic_General_CI_AS", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"Unsupported source collation: {collation}");
+        return JsonSerializer.Serialize(new { collation, compatibility = reader.GetByte(2) });
+    }
+
     public static async Task<string> InitializeAsync(bool reset)
     {
         var admin = Login("sa", Program.EnvironmentValue("MSSQL_SA_PASSWORD"), "master");

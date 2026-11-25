@@ -10,29 +10,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
+$tool = Join-Path $repositoryRoot 'Logibooks.Alta.DevTool/Logibooks.Alta.DevTool.csproj'
 $image = 'mcr.microsoft.com/mssql/server:2025-CU7-ubuntu-24.04'
-if (-not $env:ALTA_SOURCE_CONNECTION_STRING) {
-    throw 'Set ALTA_SOURCE_CONNECTION_STRING to the restored source reestr_1 database.'
-}
-
-$source = [System.Data.SqlClient.SqlConnection]::new($env:ALTA_SOURCE_CONNECTION_STRING)
-try {
-    $source.Open()
-    $query = $source.CreateCommand()
-    $query.CommandText = 'SELECT name, collation_name, compatibility_level FROM sys.databases WHERE database_id=DB_ID()'
-    $result = $query.ExecuteReader()
-    if (-not $result.Read() -or $result.GetString(0) -ine 'reestr_1') {
-        throw 'The source connection must select reestr_1.'
-    }
-    $collation = $result.GetString(1)
-    $compatibility = $result.GetByte(2)
-    if ($collation -ne 'Cyrillic_General_CI_AS') {
-        throw "Unsupported source collation: $collation"
-    }
-}
-finally {
-    $source.Dispose()
-}
+$sourceOutput = & dotnet run --project $tool --configuration Release --verbosity quiet -- inspect-source
+if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the restored source reestr_1 database.' }
+$source = $sourceOutput | Select-Object -Last 1 | ConvertFrom-Json
+$collation = $source.collation
+$compatibility = $source.compatibility
 
 $backup = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BackupPath)
 $manifest = "$backup.manifest.json"
@@ -115,7 +99,6 @@ try {
         throw 'The schema script failed in scratch.'
     }
 
-    $tool = Join-Path $repositoryRoot 'Logibooks.Alta.DevTool/Logibooks.Alta.DevTool.csproj'
     & dotnet run --project $tool --configuration Release -- prepare-baseline $serverBackup
     if ($LASTEXITCODE -ne 0) { throw 'Could not back up the compact development database.' }
     & docker cp ('{0}:{1}' -f $scratchName, $serverBackup) $scratchBackup

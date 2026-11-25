@@ -34,6 +34,7 @@ internal static class Program
             {
                 ["initialize"] => await DevelopmentDatabase.InitializeAsync(reset: false),
                 ["reset"] => await DevelopmentDatabase.InitializeAsync(reset: true),
+                ["inspect-source"] => await DevelopmentDatabase.InspectSourceAsync(),
                 ["prepare-baseline", var serverBackup] => await DevelopmentDatabase.PrepareBackupAsync(serverBackup),
                 ["write-manifest", var serverBackup, var localBackup] =>
                     await DevelopmentDatabase.WriteManifestAsync(serverBackup, localBackup),
