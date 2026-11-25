@@ -252,10 +252,14 @@ internal sealed class AltaMonitor(
         out string? failure)
     {
         var declaration = observation.Declaration;
-        if (declaration.Code is null ||
-            !short.TryParse(declaration.Procedure, NumberStyles.None, CultureInfo.InvariantCulture, out _))
+        if (string.IsNullOrWhiteSpace(declaration.Number))
         {
-            failure = "Missing DEC code or customs procedure";
+            failure = "Missing DEC number";
+            return null;
+        }
+        if (!short.TryParse(declaration.Procedure, NumberStyles.None, CultureInfo.InvariantCulture, out _))
+        {
+            failure = "Missing or invalid customs procedure";
             return null;
         }
 
@@ -312,7 +316,7 @@ internal sealed class AltaMonitor(
         string cmr, IEnumerable<Delivery> deliveries, AltaSourceRead read,
         CancellationToken token)
     {
-        foreach (var group in deliveries.GroupBy(item => item.Observation.Declaration.Code, StringComparer.Ordinal))
+        foreach (var group in deliveries.GroupBy(item => item.Observation.Declaration.Number, StringComparer.Ordinal))
         {
             var ready = new List<(Delivery Delivery, AltaAssignment Assignment)>();
             foreach (var delivery in group.OrderBy(item => item.Observation.ParcelNumber, StringComparer.Ordinal))

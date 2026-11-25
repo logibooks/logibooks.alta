@@ -10,7 +10,7 @@ using Logibooks.Alta.Configuration;
 using Logibooks.Alta.CoreApi;
 using Logibooks.Alta.Database;
 using Logibooks.Alta.Monitoring;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using Quartz;
 
 namespace Logibooks.Alta.Tests;
@@ -108,7 +108,7 @@ public sealed class MonitoringTests
 
         var payments = new[] { new AltaPayment("customsFee", 12m, "RUB") };
         monitor.Source.Payments = payments;
-        var editedDec = snapshot.Declarations[MainDec] with { Code = "edited" };
+        var editedDec = snapshot.Declarations[MainDec] with { Number = "edited" };
         var editedSnapshot = snapshot with { Declarations = new Dictionary<Guid, AltaDeclaration> { [MainDec] = editedDec } };
         monitor.Put(editedSnapshot);
         await monitor.PollAsync();
@@ -122,6 +122,7 @@ public sealed class MonitoringTests
         await monitor.PollAsync();
         var assignment = monitor.Submissions.Last().Assignments.Single();
         Assert.That(monitor.Submissions, Has.Count.EqualTo(2));
+        Assert.That(monitor.Submissions.Last().DecCode, Is.EqualTo(editedDec.Number));
         Assert.That(assignment.Payments, Is.EqualTo(payments));
         Assert.That(assignment.WeightKg, Is.EqualTo(2m));
     }
@@ -139,6 +140,26 @@ public sealed class MonitoringTests
         monitor.Put(snapshot);
         await monitor.PollAsync();
         Assert.That(monitor.Submissions.Single().Assignments.Single().ParcelNumber, Is.EqualTo("0001"));
+    }
+
+    [TestCase(null, "10", "Missing DEC number")]
+    [TestCase(" ", "10", "Missing DEC number")]
+    [TestCase("DEC-1", null, "Missing or invalid customs procedure")]
+    [TestCase("DEC-1", "invalid", "Missing or invalid customs procedure")]
+    public async Task InvalidDeclarationFieldsDeferTheAssignmentWithASpecificWarning(
+        string? number, string? procedure, string reason)
+    {
+        using var monitor = new MonitoringFixture();
+        var snapshot = Snapshot("CMR-1", Parcel("0001"));
+        monitor.Put(snapshot with
+        {
+            Declarations = new Dictionary<Guid, AltaDeclaration> { [MainDec] = new(MainDec, number, procedure) }
+        });
+
+        await monitor.PollAsync();
+
+        Assert.That(monitor.Submissions, Is.Empty);
+        Assert.That(monitor.Logger.Entries, Does.Contain((LogLevel.Warning, $"Deferred Alta Alta / CMR-1 / 0001: {reason}")));
     }
 
     [Test]
@@ -500,7 +521,7 @@ public sealed class MonitoringTests
     {
         var declarations = parcels.Where(parcel => AltaSourceValues.ReadDeclarationReference(parcel.DeclarationReference) is not null)
             .GroupBy(parcel => AltaSourceValues.ReadDeclarationReference(parcel.DeclarationReference)!.Value)
-            .ToDictionary(group => group.Key, group => new AltaDeclaration(group.Key, group.Key.ToString("N"), "10", null, null));
+            .ToDictionary(group => group.Key, group => new AltaDeclaration(group.Key, group.Key.ToString("N"), "10"));
         return new AltaRegisterSnapshot(cmr, declarations, parcels.ToDictionary(parcel => parcel.Id));
     }
 
@@ -510,6 +531,7 @@ public sealed class MonitoringTests
         private readonly AltaCoreClient _core;
         private readonly AltaMonitor _monitor;
         public SourceFixture Source { get; } = new();
+        public ListLogger<AltaMonitor> Logger { get; } = new();
         public MutableTimeProvider Clock { get; } = new(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
         public ConfigurationFixture Configuration { get; }
         public TestOptionsMonitor<CoreOptions> Options { get; }
@@ -533,7 +555,7 @@ public sealed class MonitoringTests
         }
 
         public AltaMonitor CreateMonitor(IRuntimeConfigurationProvider configuration) =>
-            new(Source, _core, configuration, Clock, NullLogger<AltaMonitor>.Instance);
+            new(Source, _core, configuration, Clock, Logger);
 
         public Task PollAsync() => _monitor.RunAsync(Configuration.Current, CancellationToken.None);
 
