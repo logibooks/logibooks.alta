@@ -5,6 +5,7 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Logibooks.Alta.Configuration;
 using Microsoft.Extensions.Options;
@@ -13,9 +14,13 @@ namespace Logibooks.Alta.CoreApi;
 
 internal interface ICoreSessionManager
 {
-    Task<string> GetTokenAsync(CancellationToken cancellationToken, CoreOptions? options = null);
+    Task<string> GetTokenAsync(CancellationToken cancellationToken, CoreOptions? options = null,
+        Action<int>? observeHeartbeatInterval = null);
+    HeartbeatSession GetHeartbeatSession(CoreOptions options);
     void InvalidateToken(string token);
 }
+
+internal readonly record struct HeartbeatSession(bool HasUnexpiredToken, int? IntervalSeconds, Task IntervalChanged);
 
 internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
 {
@@ -27,6 +32,9 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
     private readonly ILogger<CoreSessionManager> _logger;
     private readonly CoreUris _coreUris;
     private readonly SemaphoreSlim _loginLock = new(1, 1);
+    private readonly object _heartbeatGate = new();
+    private TaskCompletionSource _heartbeatIntervalChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int? _lastPublishedHeartbeatInterval;
     private TokenState? _tokenState;
 
     public CoreSessionManager(
@@ -45,14 +53,42 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
         _coreUris = coreUris;
     }
 
-    public async Task<string> GetTokenAsync(CancellationToken cancellationToken, CoreOptions? options = null)
+    public async Task<string> GetTokenAsync(CancellationToken cancellationToken, CoreOptions? options = null,
+        Action<int>? observeHeartbeatInterval = null)
     {
-        options ??= _options.CurrentValue;
+        var session = await GetSessionAsync(options ?? _options.CurrentValue, cancellationToken);
+        if (observeHeartbeatInterval is not null)
+        {
+            if (session.HeartbeatIntervalSeconds is not { } interval)
+                throw new CoreHeartbeatUnsupportedException();
+
+            observeHeartbeatInterval(interval);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        return session.Token;
+    }
+
+    public HeartbeatSession GetHeartbeatSession(CoreOptions options)
+    {
+        EnsureCurrent(options);
+        lock (_heartbeatGate)
+        {
+            var session = Volatile.Read(ref _tokenState);
+            var unexpired = session is not null && ReferenceEquals(session.Options, options)
+                && session.ExpiresAtUtc > _timeProvider.GetUtcNow();
+            return new HeartbeatSession(unexpired, unexpired ? session!.HeartbeatIntervalSeconds : null,
+                _heartbeatIntervalChanged.Task);
+        }
+    }
+
+    private async Task<TokenState> GetSessionAsync(CoreOptions options, CancellationToken cancellationToken)
+    {
         EnsureCurrent(options);
         var existing = Volatile.Read(ref _tokenState);
         if (IsUsable(existing, options))
         {
-            return existing!.Token;
+            return existing!;
         }
 
         await _loginLock.WaitAsync(cancellationToken);
@@ -62,18 +98,33 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
             existing = Volatile.Read(ref _tokenState);
             if (IsUsable(existing, options))
             {
-                return existing!.Token;
+                return existing!;
             }
 
             var token = await LoginAsync(options, cancellationToken);
             EnsureCurrent(options);
-            Volatile.Write(ref _tokenState, token);
+            PublishSession(token);
             _logger.LogInformation("A Logibooks Core JWT session was established");
-            return token.Token;
+            return token;
         }
         finally
         {
             _loginLock.Release();
+        }
+    }
+
+    private void PublishSession(TokenState session)
+    {
+        lock (_heartbeatGate)
+        {
+            Volatile.Write(ref _tokenState, session);
+            if (session.HeartbeatIntervalSeconds == _lastPublishedHeartbeatInterval)
+                return;
+
+            _lastPublishedHeartbeatInterval = session.HeartbeatIntervalSeconds;
+            var previous = _heartbeatIntervalChanged;
+            _heartbeatIntervalChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            previous.TrySetResult();
         }
     }
 
@@ -154,7 +205,8 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
 
             return new TokenState(
                 login.Token,
-                DateTimeOffset.FromUnixTimeSeconds(jwt.Payload.Expiration.Value), options);
+                DateTimeOffset.FromUnixTimeSeconds(jwt.Payload.Expiration.Value), options,
+                ReadHeartbeatInterval(login.HeartbeatIntervalSeconds));
         }
         catch (ArgumentException exception)
         {
@@ -164,7 +216,13 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
         }
     }
 
-    private sealed record TokenState(string Token, DateTimeOffset ExpiresAtUtc, CoreOptions Options);
+    private static int? ReadHeartbeatInterval(JsonElement value) =>
+        value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var seconds) && seconds is >= 5 and <= 3600
+            ? seconds
+            : null;
+
+    private sealed record TokenState(
+        string Token, DateTimeOffset ExpiresAtUtc, CoreOptions Options, int? HeartbeatIntervalSeconds);
 
     private sealed record LoginRequest(
         [property: JsonPropertyName("email")] string Email,
@@ -177,6 +235,9 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
 
         [JsonPropertyName("roles")]
         public IReadOnlyCollection<string>? Roles { get; init; }
+
+        [JsonPropertyName("heartbeatIntervalSeconds")]
+        public JsonElement HeartbeatIntervalSeconds { get; init; }
     }
 }
 

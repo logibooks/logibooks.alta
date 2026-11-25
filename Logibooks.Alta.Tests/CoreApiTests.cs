@@ -381,11 +381,15 @@ public sealed class JwtSessionHandlerTests
 
     private sealed class StubSessionManager(params string[] tokens) : ICoreSessionManager
     {
+        public HeartbeatSession GetHeartbeatSession(CoreOptions options) =>
+            throw new NotSupportedException();
+
         private readonly Queue<string> _tokens = new(tokens);
         public int GetTokenCalls { get; private set; }
         public List<string> InvalidatedTokens { get; } = [];
 
-        public Task<string> GetTokenAsync(CancellationToken cancellationToken, CoreOptions? options = null)
+        public Task<string> GetTokenAsync(CancellationToken cancellationToken, CoreOptions? options = null,
+            Action<int>? observeHeartbeatInterval = null)
         {
             GetTokenCalls++;
             return Task.FromResult(_tokens.Dequeue());

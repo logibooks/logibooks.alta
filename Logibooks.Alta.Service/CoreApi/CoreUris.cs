@@ -14,6 +14,7 @@ internal sealed class CoreUris(bool isDevelopment)
 
     public Uri Login(CoreOptions options) => Combine(options, "api/Auth/login");
     public Uri Check(CoreOptions options) => Combine(options, "api/Auth/check");
+    public Uri Heartbeat(CoreOptions options) => Combine(options, "api/alta/v1/heartbeat");
 
     public Uri Worklist(CoreOptions options, string databaseName) => Alta(options, databaseName, "worklist");
 
