@@ -169,6 +169,8 @@ For a standalone executable, run `dotnet publish .\Logibooks.Alta.DevTool -c Rel
 
 To clear the development SQL database, stop any Windows adapter debugging session and run `.\scripts\Start-Development.ps1 -ResetAlta`. The helper checks the development volume and database marker. It restores the backup under a temporary name and checks its marker, schema, and emptiness before swapping it into place. The helper resumes the Compose adapter if it was running. Use a new CMR and new DEC numbers for the next replay because the existing Core database retains its decisions.
 
+Reset uses the active SQL reader and writer passwords. If either password changes in `.env`, run normal startup first to apply the new credentials, then reset.
+
 ### Visual Studio Docker Compose project
 
 Open `Logibooks.Alta.sln` with Visual Studio Container Tools and the .NET 10 SDK. Set `docker-compose` as the startup project, select **Logibooks (debug Alta)**, and press F5. The profile starts the full Compose stack and runs Alta with monitoring enabled under the debugger. The **Docker Compose** profile starts SQL Server and Adminer. **Docker Compose (Adminer)** also opens Adminer in the browser.

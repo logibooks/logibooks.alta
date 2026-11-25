@@ -48,6 +48,7 @@ services:
       ALTA_DB_PASSWORD: ${ALTA_DB_PASSWORD:-}
       ALTA_DEV_WRITER_PASSWORD: ${ALTA_DEV_WRITER_PASSWORD:-}
     volumes:
+      # SQL Server reads its own backup mount. The initializer reads the manifest.
       - type: bind
         source: ${ALTA_DEV_BASELINE_BAK:-./.local/alta/reestr_1-dev.bak}.manifest.json
         target: /baseline/reestr_1.bak.manifest.json
