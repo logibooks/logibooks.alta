@@ -97,18 +97,20 @@ SQL Server `2025-CU7-ubuntu-24.04` listens on `127.0.0.1:1433` and uses an empty
 
 ### Prepare the compact backup once
 
+For a fresh checkout, copy the prepared `reestr_1-dev.bak` and `reestr_1-dev.bak.manifest.json` into `.local/alta/`. If you keep the pair in another location, set `ALTA_DEV_BASELINE_BAK` to its `.bak` path in `.env`. A checkout with the prepared pair can start directly with the steps below.
+
 Start the restored source SQL Server and obtain a connection to its `reestr_1` with schema extraction access. Install [SqlPackage](https://learn.microsoft.com/sql/tools/sqlpackage/sqlpackage-download) and run the following in PowerShell 7.3 or later.
 
 ```powershell
 $env:ALTA_SOURCE_CONNECTION_STRING = '<source reestr_1 connection string>'
-.\scripts\New-DevelopmentBaseline.ps1 -BackupPath 'D:\Projects\logibooks\AltaDB\development\reestr_1-dev.bak'
+.\scripts\New-DevelopmentBaseline.ps1 -BackupPath '.\.local\alta\reestr_1-dev.bak'
 ```
 
 The script extracts schema only and applies it in an isolated scratch SQL Server on `127.0.0.1:11433`. The native lists use foreign keys to `Docs.GID` and the verified schema has no list-writing triggers. The pinned Linux image lacks the optional full-text component for the `Docs` index. The script skips that index, checks integrity and emptiness, then writes the `.bak` and adjacent `.bak.manifest.json`. To supply a reviewed schema-only SQL script when SqlPackage cannot represent a required source object, pass `-SchemaSqlPath`. Keep the two generated files together.
 
 ### Start SQL Server and Adminer
 
-Start Docker Desktop in Linux container mode. Copy `.env.example` to `.env` if needed. Set `ALTA_DEV_BASELINE_BAK` to the backup path and set `MSSQL_SA_PASSWORD`, `ALTA_DB_PASSWORD`, and `ALTA_DEV_WRITER_PASSWORD`. Use single quotes around dotenv passwords containing `$`.
+Start Docker Desktop in Linux container mode. Copy `.env.example` to `.env` if needed. Set `MSSQL_SA_PASSWORD`, `ALTA_DB_PASSWORD`, and `ALTA_DEV_WRITER_PASSWORD`. Use single quotes around dotenv passwords containing `$`.
 
 ```powershell
 .\scripts\Start-Development.ps1
@@ -160,6 +162,8 @@ dotnet run --project $tool -- decide --cmr CMR-42 --dec 10000000/251126/0000042 
 ```
 
 Use the CMR, procedure, and parcel numbers from your register and choose DEC numbers unused by Core. Wait for the next adapter cycle between decisions. In **Решения о выпуске**, verify the goods, line totals, weight change, and final release from **Синхронизация**. Keep a second parcel unlinked until these checks are complete so the register stays on the worklist. Declare it with a new DEC. With no `--parcel` flags, `declare` takes all currently unlinked parcels and `decide` updates all members of the selected DEC.
+
+The tool preserves quantities from the export, including fractions. Core applies its own validation to submitted decisions, including its whole-unit quantity rule.
 
 For a standalone executable, run `dotnet publish .\Logibooks.Alta.DevTool -c Release --self-contained false` on Windows. Run `Logibooks.Alta.DevTool.exe` with the same arguments and writer connection setting.
 

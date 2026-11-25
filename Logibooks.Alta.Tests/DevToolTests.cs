@@ -13,11 +13,12 @@ namespace Logibooks.Alta.Tests;
 [TestFixture]
 public sealed class DevToolTests
 {
-    [TestCase(false)]
-    [TestCase(true)]
-    public async Task CoreUtf8ExportProducesReadableIndPostAndOrderedDeclaration(bool withBom)
+    [TestCase(false, "3")]
+    [TestCase(true, "3")]
+    [TestCase(false, "1.5")]
+    public async Task CoreUtf8ExportProducesReadableIndPostAndOrderedDeclaration(bool withBom, string quantity)
     {
-        using var source = new MemoryStream(CoreBytes(withBom, "00042", "CMR-42", "2026-11-25"));
+        using var source = new MemoryStream(CoreBytes(withBom, "00042", "CMR-42", "2026-11-25", quantity: quantity));
         var parcel = IndPostXml.ReadParcel(source, "CMR-42", "IndPost_00042.xml");
         using var stored = new MemoryStream(IndPostXml.Serialize(parcel.Document));
         var xml = XDocument.Load(stored);
@@ -36,7 +37,8 @@ public sealed class DevToolTests
             Assert.That(shipment.Number, Is.EqualTo("00042"));
             Assert.That(shipment.WeightKg, Is.Null);
             Assert.That(shipment.Goods!.Select(goods => goods.Description), Is.EqualTo(new[] { "Товар\rШК", "Другой товар" }));
-            Assert.That(shipment.Goods!.Select(goods => goods.Quantity), Is.EqualTo(new[] { 3m, 1m }));
+            Assert.That(shipment.Goods!.Select(goods => goods.Quantity),
+                Is.EqualTo(new[] { decimal.Parse(quantity, System.Globalization.CultureInfo.InvariantCulture), 1m }));
             Assert.That(shipment.Goods!.Select(goods => goods.TotalCost), Is.EqualTo(new[] { 7.35m, 1m }));
             Assert.That(shipment.Goods!.Select(goods => goods.TnVed), Is.EqualTo(new[] { "1234567890", null }));
         });
@@ -83,14 +85,15 @@ public sealed class DevToolTests
         }
     }
 
-    private static byte[] CoreBytes(bool withBom, string number, string cmr, string time, string cost = "7.35")
+    private static byte[] CoreBytes(bool withBom, string number, string cmr, string time, string cost = "7.35",
+        string quantity = "3")
     {
         var encoding = new UTF8Encoding(withBom);
         return [.. encoding.GetPreamble(), .. encoding.GetBytes($"""
             <?xml version="1.0" encoding="utf-16"?>
             <AltaIndPost time="{time}">
               <AVIANUM>{cmr}</AVIANUM><NUM>{number}</NUM><ALLWEIGHT>1.250</ALLWEIGHT>
-              <GOODS><DESCR>Товар&#xD;ШК</DESCR><QTY>3</QTY><COST>{cost}</COST><TNVED>1234567890</TNVED></GOODS>
+              <GOODS><DESCR>Товар&#xD;ШК</DESCR><QTY>{quantity}</QTY><COST>{cost}</COST><TNVED>1234567890</TNVED></GOODS>
               <GOODS><DESCR>Другой товар</DESCR><QTY>1</QTY><COST>1.00</COST></GOODS>
             </AltaIndPost>
             """)];

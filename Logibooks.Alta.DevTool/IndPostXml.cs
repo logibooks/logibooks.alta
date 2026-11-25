@@ -123,8 +123,8 @@ internal static class IndPostXml
         if (string.IsNullOrWhiteSpace(description))
             throw new InvalidDataException("A GOODS line has no DESCR.");
         var quantity = NativeValues.Number(Value(goods, "QTY"), "QTY");
-        if (quantity <= 0 || quantity != decimal.Truncate(quantity))
-            throw new InvalidDataException("QTY must be a positive whole number.");
+        if (quantity <= 0)
+            throw new InvalidDataException("QTY must be positive.");
         var cost = NativeValues.Number(Value(goods, "COST"), "COST");
         if (cost < 0)
             throw new InvalidDataException("COST must be nonnegative.");

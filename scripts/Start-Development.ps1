@@ -48,7 +48,7 @@ try {
         Where-Object { $_.target -in '/baseline/reestr_1.bak', '/baseline/reestr_1.bak.manifest.json' }
     foreach ($mount in $baselineMounts) {
         if (-not (Test-Path -LiteralPath $mount.source -PathType Leaf)) {
-            throw "Development baseline file is missing: $($mount.source). See New-DevelopmentBaseline.ps1."
+            throw "Development baseline file is missing: $($mount.source). Copy the prepared backup and manifest as described in README.md."
         }
     }
 
