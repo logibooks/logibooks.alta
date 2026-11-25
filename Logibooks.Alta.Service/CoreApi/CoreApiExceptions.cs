@@ -16,6 +16,9 @@ internal sealed class CoreAuthenticationException(string message, Exception? inn
 
 internal sealed class CoreAuthorizationException(string message) : CoreApiException(message);
 
+internal sealed class CoreHeartbeatUnsupportedException()
+    : CoreApiException("The current Core session does not support Alta heartbeats.");
+
 internal sealed class CoreRequestException(HttpStatusCode statusCode, string? code = null, string? message = null)
     : CoreApiException(message ?? $"Logibooks Core returned HTTP status {(int)statusCode}.")
 {

@@ -25,16 +25,28 @@ internal sealed class AltaCoreClient(
     public CoreOptions CaptureConfiguration()
     {
         var scope = options.CurrentValue;
+        ValidateConfiguration(scope);
+        return scope;
+    }
+
+    internal void ValidateConfiguration(CoreOptions scope)
+    {
         if (!scope.Enabled)
             throw new CoreConfigurationException("Core integration is disabled.");
-        if (uris.GetAllowedBaseUri(scope.BaseUrl) is null)
-            throw new CoreConfigurationException(uris.BaseUrlError);
-        if (string.IsNullOrWhiteSpace(scope.Email) || string.IsNullOrWhiteSpace(scope.Password))
-            throw new CoreConfigurationException("Core credentials are not configured.");
-        if (scope.RequestTimeoutSeconds is < 1 or > 300 || scope.JwtRefreshSkewMinutes is < 0 or > 1_440)
-            throw new CoreConfigurationException("Core timeout or JWT refresh interval is outside the allowed range.");
 
-        return scope;
+        if (scope.ConnectionErrors(uris).Concat(scope.TimeoutErrors()).FirstOrDefault() is { } error)
+            throw new CoreConfigurationException(error);
+    }
+
+    public async Task SendHeartbeatAsync(CoreOptions scope, Action<int> observeInterval, CancellationToken token)
+    {
+        EnsureCurrent(scope);
+        using var client = clientFactory.CreateClient(HttpClientNames.Api);
+        using var request = CreateRequest(HttpMethod.Post, uris.Heartbeat(scope), scope);
+        request.Options.Set(JwtSessionHandler.HeartbeatIntervalObserver, observeInterval);
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
+        if (response.StatusCode != HttpStatusCode.NoContent)
+            throw new CoreRequestException(response.StatusCode);
     }
 
     public AltaWorklistStatus? GetWorklistStatus(string databaseName) =>

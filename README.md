@@ -87,6 +87,8 @@ Target names must be nonempty and unique among enabled targets. Enabled targets 
 
 Set `Service.Enabled` to true only after configuration is valid. While disabled, the adapter waits for configuration changes. Windows service events appear in **Event Viewer → Windows Logs → Application** with source `Logibooks Alta Adapter`.
 
+When both `Service.Enabled` and `Core.Enabled` are true, Alta sends heartbeats on the interval advertised by Core at login. Heartbeats run independently of the SQL and Quartz polling cycle. Core reads the interval and missed-heartbeat limit from `AltaMonitoring:Heartbeat` in its `appsettings.json`. The defaults are 600 seconds and three misses, so liveness expires 30 minutes after the last accepted heartbeat. Deploy Core first. After changing the Core interval and restarting Core, restart Alta to negotiate it immediately.
+
 The full configuration file can be overridden with `LOGIBOOKS_ALTA_CONFIG_PATH`. Without the override, the default is ProgramData on Windows and `/etc/logibooks/alta/appsettings.json` on Linux.
 
 ## Development Compose environment
