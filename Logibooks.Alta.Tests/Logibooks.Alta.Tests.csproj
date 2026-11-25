@@ -19,5 +19,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Logibooks.Alta.Service\Logibooks.Alta.Service.csproj" />
+    <ProjectReference Include="..\Logibooks.Alta.DevTool\Logibooks.Alta.DevTool.csproj" />
   </ItemGroup>
 </Project>

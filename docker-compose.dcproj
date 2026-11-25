@@ -18,5 +18,6 @@
     <None Include="launchSettings.json" />
     <None Include=".env.example" />
     <None Include="scripts\Start-Development.ps1" />
+    <None Include="scripts\New-DevelopmentBaseline.ps1" />
   </ItemGroup>
 </Project>

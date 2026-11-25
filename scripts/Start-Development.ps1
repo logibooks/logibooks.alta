@@ -1,5 +1,5 @@
-[CmdletBinding()]
-param()
+[CmdletBinding(SupportsShouldProcess)]
+param([switch] $ResetAlta)
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
@@ -20,7 +20,7 @@ try {
     $compose = @('compose', '-f', 'docker-compose.yml')
     $modelJson = & docker @compose config --format json
     if ($LASTEXITCODE -ne 0) {
-        throw 'Set the existing SQL Server sa password in .env. See .env.example.'
+        throw 'Set the development SQL Server credentials in .env. See .env.example.'
     }
 
     $passwordPrefix = 'ALTA_DB_PASSWORD='
@@ -34,20 +34,70 @@ try {
     if (-not $passwordEntry -or $passwordEntry.Length -eq $passwordPrefix.Length) {
         throw 'Set ALTA_DB_PASSWORD in .env to the read-only logibooks SQL login password.'
     }
+    $writerPrefix = 'ALTA_DEV_WRITER_PASSWORD='
+    $writerEntry = $composeEnvironment |
+        Where-Object { $_.StartsWith($writerPrefix, [StringComparison]::Ordinal) } |
+        Select-Object -First 1
+    if (-not $writerEntry -or $writerEntry.Length -eq $writerPrefix.Length) {
+        throw 'Set ALTA_DEV_WRITER_PASSWORD in .env to the development importer SQL login password.'
+    }
 
     $model = $modelJson | Out-String | ConvertFrom-Json
     $sql = $model.services.mssql
-    $databaseMount = $sql.volumes | Where-Object target -eq '/database'
-    foreach ($fileName in 'reestr_1_1.mdf', 'reestr_1_1_log.ldf') {
-        $filePath = Join-Path $databaseMount.source $fileName
-        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
-            throw "Restored database file is missing: $filePath"
+    $baselineMounts = @($sql.volumes) + @($model.services.'mssql-init'.volumes) |
+        Where-Object { $_.target -in '/baseline/reestr_1.bak', '/baseline/reestr_1.bak.manifest.json' }
+    foreach ($mount in $baselineMounts) {
+        if (-not (Test-Path -LiteralPath $mount.source -PathType Leaf)) {
+            throw "Development baseline file is missing: $($mount.source). Copy the prepared backup and manifest as described in README.md."
         }
     }
 
-    & docker @compose up --detach --wait --wait-timeout 360
+    if ($ResetAlta) {
+        $selected = & docker @compose ps -q mssql
+        if ($LASTEXITCODE -ne 0 -or -not $selected) {
+            throw 'Start the development database before resetting it.'
+        }
+        $container = (& docker inspect $selected | ConvertFrom-Json)[0]
+        $project = $model.name
+        $volumeName = $model.volumes.'sql-dev-state'.name
+        $mount = $container.Mounts | Where-Object Destination -eq '/var/opt/mssql'
+        if ($container.Config.Labels.'com.docker.compose.project' -cne $project -or
+            $container.Config.Labels.'com.docker.compose.service' -cne 'mssql' -or
+            $mount.Type -cne 'volume' -or $mount.Name -cne $volumeName -or -not $volumeName) {
+            throw 'The running SQL container is not using the expected development volume.'
+        }
+        $volume = (& docker volume inspect $volumeName | ConvertFrom-Json)[0]
+        if ($volume.Labels.'com.docker.compose.project' -cne $project -or
+            $volume.Labels.'com.docker.compose.volume' -cne 'sql-dev-state') {
+            throw 'The SQL volume does not belong to this Compose development project.'
+        }
+        if (-not $PSCmdlet.ShouldProcess($project, "Reset the marked $databaseName development database")) {
+            return
+        }
+
+        $fullCompose = $compose + @('-f', 'docker-compose.override.yml')
+        $runningAlta = & docker @fullCompose ps --status running -q alta
+        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the development adapter.' }
+        if ($runningAlta) {
+            & docker @fullCompose stop alta
+            if ($LASTEXITCODE -ne 0) { throw 'Could not stop the development adapter.' }
+        }
+        try {
+            & docker @compose run --rm --no-deps mssql-init reset
+            if ($LASTEXITCODE -ne 0) { throw 'Could not reset the Alta development database.' }
+        }
+        finally {
+            if ($runningAlta) {
+                & docker @fullCompose start alta
+                if ($LASTEXITCODE -ne 0) { throw 'The adapter could not restart after the reset attempt.' }
+            }
+        }
+        return
+    }
+
+    & docker @compose up --build --detach --wait --wait-timeout 360
     if ($LASTEXITCODE -ne 0) {
-        throw "Docker Compose did not become ready. Check docker compose logs mssql adminer."
+        throw 'Docker Compose did not become ready. Check docker compose logs mssql mssql-init adminer.'
     }
 
     $sqlPort = ($sql.ports | Where-Object target -eq 1433).published
