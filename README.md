@@ -93,15 +93,28 @@ The full configuration file can be overridden with `LOGIBOOKS_ALTA_CONFIG_PATH`.
 
 ## Development Compose environment
 
-SQL Server `2025-CU7-ubuntu-24.04` listens on `127.0.0.1:1433` and includes `sqlcmd`. It uses the restored `reestr_1_1.mdf` and `reestr_1_1_log.ldf` from `D:\Projects\logibooks\AltaDB\reestr_1_1`, mounted at `/database`. The external Docker volume `alta-reestr-1-1-sql-state` holds the SQL Server catalog that already references these files. Compose startup uses this existing database, and `docker compose down` preserves the files and catalog.
+SQL Server `2025-CU7-ubuntu-24.04` listens on `127.0.0.1:1433` and uses an empty `reestr_1` baseline built from the native schema. Compose restores it into the project’s `sql-dev-state` volume on first start. The backup and its manifest are mounted read-only. The initializer verifies the development marker and provisions the `logibooks` reader and `alta_dev_writer` logins before Compose starts Alta or Adminer. Regular startup preserves imported documents.
 
-Start Docker Desktop in Linux container mode. If `.env` is absent, copy `.env.example` to `.env`. Set `MSSQL_SA_PASSWORD` to the existing `sa` password for the state volume and `ALTA_DB_PASSWORD` to the password for the read-only `logibooks` login. Use single quotes around dotenv passwords containing `$`. Run the helper from the solution directory.
+### Prepare the compact backup once
+
+Start the restored source SQL Server and obtain a connection to its `reestr_1` with schema extraction access. Install [SqlPackage](https://learn.microsoft.com/sql/tools/sqlpackage/sqlpackage-download) and run the following in PowerShell 7.3 or later.
+
+```powershell
+$env:ALTA_SOURCE_CONNECTION_STRING = '<source reestr_1 connection string>'
+.\scripts\New-DevelopmentBaseline.ps1 -BackupPath 'D:\Projects\logibooks\AltaDB\development\reestr_1-dev.bak'
+```
+
+The script extracts schema only and applies it in an isolated scratch SQL Server on `127.0.0.1:11433`. The native lists use foreign keys to `Docs.GID` and the verified schema has no list-writing triggers. The pinned Linux image lacks the optional full-text component for the `Docs` index. The script skips that index, checks integrity and emptiness, then writes the `.bak` and adjacent `.bak.manifest.json`. To supply a reviewed schema-only SQL script when SqlPackage cannot represent a required source object, pass `-SchemaSqlPath`. Keep the two generated files together.
+
+### Start SQL Server and Adminer
+
+Start Docker Desktop in Linux container mode. Copy `.env.example` to `.env` if needed. Set `ALTA_DEV_BASELINE_BAK` to the backup path and set `MSSQL_SA_PASSWORD`, `ALTA_DB_PASSWORD`, and `ALTA_DEV_WRITER_PASSWORD`. Use single quotes around dotenv passwords containing `$`.
 
 ```powershell
 .\scripts\Start-Development.ps1
 ```
 
-The helper waits for the restored database to accept connections and configures the Windows adapter to connect to `reestr_1` as `logibooks`. A fresh development configuration uses `http://localhost` for Core and starts with the Core probe disabled. Run the helper again after changing the SQL port or the adapter's SQL password.
+The helper waits for initialization and configures the Windows adapter to connect to `reestr_1` as `logibooks`. A fresh development configuration uses `http://localhost` for Core and starts with the Core probe disabled. Run the helper again after changing the SQL port or the adapter's SQL password.
 
 Compose pulls the prebuilt `adminer:5.5.0-standalone` image with MS SQL support. Open [Adminer](http://127.0.0.1:8083), select **MS SQL**, and sign in with server `mssql`, user `sa`, the password from `.env`, and database `reestr_1`. For an interactive SQL session, run:
 
@@ -114,7 +127,7 @@ docker compose exec mssql sqlcmd -S localhost -U sa -d reestr_1 -C
 Run the full stack from the Alta repository with Docker Desktop in Linux container mode.
 
 ```powershell
-docker compose up -d
+docker compose up -d --build
 ```
 
 - The `db` service mounts the existing PostgreSQL 17 cluster from `../.pgdata`. Set `LOGIBOOKS_CORE_PGDATA` in `.env` if your data directory is elsewhere. Run one stack at a time against that directory. If the standalone Core stack currently owns it, stop that stack before starting Alta's full stack.
@@ -130,7 +143,27 @@ Open [Adminer](http://localhost:8083) and choose the connection for the database
 | PostgreSQL | `db` | `logibooks` | `postgres` | Existing Core development PostgreSQL password |
 | MS SQL | `mssql` | `reestr_1` | `logibooks` | `ALTA_DB_PASSWORD` in `.env` |
 
-Alta starts monitoring by default. To pause monitoring, set `ALTA_TEST_MONITORING=false` in `.env` and run `docker compose up -d` again. Follow the adapter's output with `docker compose logs -f alta`. To stop the stack and retain both databases, run `docker compose down`.
+Alta starts monitoring every 15 seconds in Compose. Set `ALTA_TEST_MONITORING_CRON` to use a different Quartz schedule. To pause monitoring, set `ALTA_TEST_MONITORING=false` in `.env` and run `docker compose up -d` again. Follow the adapter's output with `docker compose logs -f alta`. To stop the stack and keep both databases, run `docker compose down`.
+
+### Load a register and replay decisions
+
+Upload a test register in Core, set a unique CMR and the `reestr_1` Alta target, and ensure the register's status enables Alta monitoring. Download the full XML archive for eligible parcels. The tool accepts that ZIP directly or one exported `AltaIndPost` XML file.
+
+```powershell
+$env:ALTA_DEV_WRITER_CONNECTION_STRING = 'Server=tcp:127.0.0.1,1433;Database=reestr_1;User ID=alta_dev_writer;Password=replace-me;Encrypt=True;TrustServerCertificate=True'
+$tool = '.\Logibooks.Alta.DevTool'
+dotnet run --project $tool -- import --cmr CMR-42 .\IndPost_CMR-42.zip
+dotnet run --project $tool -- declare --cmr CMR-42 --dec 10000000/251126/0000042 --procedure 40 --parcel 00042
+dotnet run --project $tool -- decide --cmr CMR-42 --dec 10000000/251126/0000042 --code 11
+dotnet run --project $tool -- decide --cmr CMR-42 --dec 10000000/251126/0000042 --code 11 --parcel 00042 --weight-kg 2.50
+dotnet run --project $tool -- decide --cmr CMR-42 --dec 10000000/251126/0000042 --code 10
+```
+
+Use the CMR, procedure, and parcel numbers from your register and choose DEC numbers unused by Core. Wait for the next adapter cycle between decisions. In **Решения о выпуске**, verify the goods, line totals, weight change, and final release from **Синхронизация**. Keep a second parcel unlinked until these checks are complete so the register stays on the worklist. Declare it with a new DEC. With no `--parcel` flags, `declare` takes all currently unlinked parcels and `decide` updates all members of the selected DEC.
+
+For a standalone executable, run `dotnet publish .\Logibooks.Alta.DevTool -c Release --self-contained false` on Windows. Run `Logibooks.Alta.DevTool.exe` with the same arguments and writer connection setting.
+
+To clear the development SQL database, stop any Windows adapter debugging session and run `.\scripts\Start-Development.ps1 -ResetAlta`. The helper checks the development volume and database marker. It restores the backup under a temporary name and checks its marker, schema, and emptiness before swapping it into place. The helper resumes the Compose adapter if it was running. Use a new CMR and new DEC numbers for the next replay because the existing Core database retains its decisions.
 
 ### Visual Studio Docker Compose project
 

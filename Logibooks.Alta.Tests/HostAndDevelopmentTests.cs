@@ -198,7 +198,7 @@ public sealed class HostConstructionTests
 public sealed class DevelopmentArtifactTests
 {
     [Test]
-    public void ComposeStack_UsesRestoredDatabaseAndLoopbackPorts()
+    public void ComposeStack_RestoresTheCompactBaselineBeforeStartingConsumers()
     {
         var root = FindRepositoryRoot();
         var compose = File.ReadAllText(Path.Combine(root, "docker-compose.yml"));
@@ -208,15 +208,17 @@ public sealed class DevelopmentArtifactTests
             Assert.That(compose, Does.Contain("mcr.microsoft.com/mssql/server:2025-CU7-ubuntu-24.04"));
             Assert.That(compose, Does.Contain("127.0.0.1:${MSSQL_PORT:-1433}:1433"));
             Assert.That(compose, Does.Contain("127.0.0.1:${ADMINER_PORT:-8083}:8080"));
-            Assert.That(compose, Does.Contain("- sql-state:/var/opt/mssql"));
-            Assert.That(compose, Does.Contain("external: true"));
-            Assert.That(compose, Does.Contain("target: /database"));
+            Assert.That(compose, Does.Contain("- sql-dev-state:/var/opt/mssql"));
+            Assert.That(compose, Does.Contain("target: /baseline/reestr_1.bak"));
+            Assert.That(compose, Does.Contain("target: /baseline/reestr_1.bak.manifest.json"));
+            Assert.That(compose, Does.Contain("read_only: true"));
             Assert.That(compose, Does.Contain("create_host_path: false"));
             Assert.That(compose, Does.Contain("PATH: /opt/mssql-tools18/bin:"));
-            Assert.That(compose, Does.Match(@"sqlcmd -S localhost -U sa -d reestr_1\s"));
+            Assert.That(compose, Does.Match(@"sqlcmd -S localhost -U sa -d master\s"));
             Assert.That(compose, Does.Contain("condition: service_healthy"));
+            Assert.That(compose, Does.Contain("condition: service_completed_successfully"));
             Assert.That(compose, Does.Contain("image: adminer:5.5.0-standalone"));
-            Assert.That(compose, Does.Not.Contain("build:"));
+            Assert.That(compose, Does.Not.Contain("external: true"));
         });
     }
 
@@ -262,7 +264,7 @@ public sealed class DevelopmentArtifactTests
             var integrationActions = integration.GetProperty("serviceActions").EnumerateObject()
                 .ToDictionary(action => action.Name, action => action.Value.GetString());
             Assert.That(integrationActions.Keys,
-                Is.EquivalentTo(new[] { "db", "mssql", "adminer", "core", "ui", "alta" }));
+                Is.EquivalentTo(new[] { "db", "mssql", "mssql-init", "adminer", "core", "ui", "alta" }));
             Assert.That(integrationActions["alta"], Is.EqualTo("StartDebugging"));
             Assert.That(integrationActions.Where(action => action.Key != "alta").Select(action => action.Value),
                 Is.All.EqualTo("StartWithoutDebugging"));
@@ -272,7 +274,7 @@ public sealed class DevelopmentArtifactTests
                 var profile = profiles.GetProperty(name);
                 Assert.That(profile.GetProperty("commandName").GetString(), Is.EqualTo("DockerCompose"));
                 var actions = profile.GetProperty("serviceActions").EnumerateObject().ToArray();
-                Assert.That(actions.Select(action => action.Name), Is.EquivalentTo(new[] { "mssql", "adminer" }));
+                Assert.That(actions.Select(action => action.Name), Is.EquivalentTo(new[] { "mssql", "mssql-init", "adminer" }));
                 Assert.That(actions.Select(action => action.Value.GetString()), Is.All.EqualTo("StartWithoutDebugging"));
             }
             Assert.That(windowsProfile.GetProperty("commandName").GetString(), Is.EqualTo("Project"));
