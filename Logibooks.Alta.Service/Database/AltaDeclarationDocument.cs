@@ -128,6 +128,12 @@ internal static class AltaDeclarationDocument
 
 internal static class AltaSourceValues
 {
+    public static string? ReadDeclarationNumber(string? listRegNum, string? documentRegNum)
+    {
+        var number = string.IsNullOrWhiteSpace(listRegNum) ? documentRegNum : listRegNum;
+        return string.IsNullOrWhiteSpace(number) ? null : number.Trim();
+    }
+
     public static Guid? ReadDeclarationReference(string? raw)
     {
         var value = raw?.Trim();
