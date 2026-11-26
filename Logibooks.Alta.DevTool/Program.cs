@@ -2,7 +2,6 @@
 // All rights reserved.
 // This file is a part of Logibooks Alta adapter
 
-using System.Globalization;
 using System.Text.Json;
 using System.Xml;
 using Microsoft.Data.SqlClient;
@@ -80,7 +79,7 @@ internal static class Program
         var number = NativeValues.Required(parsed.One("dec"), "DEC number", 25);
         if (command == "declare")
         {
-            var procedure = NativeValues.Code(parsed.One("procedure")!, "Procedure").ToString("D2", CultureInfo.InvariantCulture);
+            var procedure = NativeValues.Procedure(parsed.One("procedure")!);
             var parcels = parsed.Many("parcel").Select(value => NativeValues.Required(value, "Parcel number", 30)).ToArray();
             if (parcels.Distinct(StringComparer.OrdinalIgnoreCase).Count() != parcels.Length)
                 throw new InvalidDataException("Specify each parcel only once.");
