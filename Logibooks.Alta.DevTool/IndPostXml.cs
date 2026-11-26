@@ -174,6 +174,11 @@ internal static class NativeValues
             : throw new InvalidDataException("Weight must be nonnegative and smaller than 10000000 kg.");
     }
 
+    public static string Procedure(string value) => short.TryParse(value, NumberStyles.None,
+        CultureInfo.InvariantCulture, out _)
+        ? value
+        : throw new InvalidDataException($"Procedure must be a number from 0 to {short.MaxValue}.");
+
     public static int Code(string value, string field) => int.TryParse(value, NumberStyles.None,
         CultureInfo.InvariantCulture, out var code) && code is >= 1 and <= 99
         ? code

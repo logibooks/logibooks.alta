@@ -13,6 +13,22 @@ namespace Logibooks.Alta.Tests;
 [TestFixture]
 public sealed class DevToolTests
 {
+    [TestCase("0")]
+    [TestCase("1")]
+    [TestCase("01")]
+    [TestCase("100")]
+    [TestCase("32767")]
+    public void ProcedurePreservesValidDigits(string value) =>
+        Assert.That(NativeValues.Procedure(value), Is.EqualTo(value));
+
+    [TestCase("")]
+    [TestCase("-1")]
+    [TestCase("+1")]
+    [TestCase("1 ")]
+    [TestCase("32768")]
+    public void ProcedureRejectsInvalidValues(string value) =>
+        Assert.That(() => NativeValues.Procedure(value), Throws.TypeOf<InvalidDataException>());
+
     [TestCase(false, "3")]
     [TestCase(true, "3")]
     [TestCase(false, "1.5")]
