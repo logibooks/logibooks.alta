@@ -6,7 +6,7 @@ Logibooks Alta Adapter is a Windows application that monitors one or more Micros
 
 ## Runtime behavior
 
-- The self-contained x64 adapter installs as the `LogibooksAltaAdapter` Windows service and runs under `LocalService`.
+- The self-contained x64 adapter runs as the `LogibooksAltaAdapter` Windows service under `LocalService` or in a console under the current Windows account.
 - Production SQL Server instances and databases remain external and are not installed or managed by the adapter.
 - In development, run the adapter on Windows with SQL Server 2025 and Adminer in Docker Desktop's Linux containers.
 - Quartz runs an initial cycle on enabled startup, then follows the configured cron and time zone. A running cycle causes overlapping firings to be skipped.
@@ -40,13 +40,14 @@ The `win-x64` profile publishes `Logibooks.Alta.Adapter.exe` under `bin\Release\
 
 ## Production installation and configuration
 
-Run `Logibooks.Alta.Adapter.Setup.exe` with administrator privileges. Setup installs the service under `%ProgramFiles%\Logibooks\Alta` and starts it automatically. For unattended installation, use `/VERYSILENT /NORESTART` from an elevated prompt.
+Open `Logibooks.Alta.Adapter.Setup.exe` and choose the installation mode.
 
-If an older MSI-based service or per-user Alta installation is present, uninstall it from **Installed apps** before running Setup. To reuse settings from a per-user installation, transfer the values you need from `%LOCALAPPDATA%\Logibooks\Alta\appsettings.json` into the provisioned service configuration.
+- **Console app** installs for your Windows account without administrator rights. In the Start menu's **Logibooks** folder, use **Open Alta adapter configuration** to edit `%LOCALAPPDATA%\Logibooks\Alta\appsettings.json`. Select **Start Alta adapter in console mode** to run the adapter and see its logs. Press **Ctrl+C** to stop it.
+- **Windows service** requires administrator rights, installs under `%ProgramFiles%\Logibooks\Alta`, and starts automatically under `LocalService`. Edit `%ProgramData%\Logibooks\Alta\appsettings.json` as an administrator. Administrators and SYSTEM receive full access, and `LocalService` receives read access. If an older MSI-based service is installed, uninstall it from **Installed apps** before choosing this mode.
 
-Edit `%ProgramData%\Logibooks\Alta\appsettings.json` as an administrator. Administrators and SYSTEM receive full access, and `LocalService` receives read access. Setup preserves the service configuration during upgrades and uninstall.
+Both modes preserve their own configuration during upgrades and uninstall. For unattended installation, use `/CURRENTUSER /VERYSILENT /NORESTART` for the console or `/ALLUSERS /VERYSILENT /NORESTART` from an elevated prompt for the service. If an existing service deployment uses only `/VERYSILENT /NORESTART`, add `/ALLUSERS` or `/SUPPRESSMSGBOXES` to skip the mode selection dialog.
 
-The service writes rolling logs under `%ProgramData%\Logibooks\Alta\Logs`. Log files rotate daily or at 10 MiB, with up to 14 files retained. Use `Logging:LogLevel` to set severity and `Logging:File:Enabled` to toggle file logging. `Logging:File:Directory` accepts an absolute path or a path relative to `appsettings.json`. A custom service log directory must grant `LocalService` modify access. Restart the adapter after changing file logging settings.
+The adapter writes rolling logs in the `Logs` folder next to `appsettings.json`. Log files rotate daily or at 10 MiB, with up to 14 files retained. Use `Logging:LogLevel` to set severity and `Logging:File:Enabled` to toggle file logging. `Logging:File:Directory` accepts an absolute path or a path relative to `appsettings.json`. A custom service log directory must grant `LocalService` modify access. Restart the adapter after changing file logging settings.
 
 An existing 0.1.0 configuration using `ConnectionStrings.AltaDatabase` must be updated to the `Databases` format before enabling probes.
 
@@ -89,7 +90,7 @@ Set `Service.Enabled` to true only after configuration is valid. While disabled,
 
 When both `Service.Enabled` and `Core.Enabled` are true, Alta sends heartbeats on the interval advertised by Core at login. Heartbeats run independently of the SQL and Quartz polling cycle. Core reads the interval and missed-heartbeat limit from `AltaMonitoring:Heartbeat` in its `appsettings.json`. The defaults are 600 seconds and three misses, so liveness expires 30 minutes after the last accepted heartbeat. Deploy Core first. After changing the Core interval and restarting Core, restart Alta to negotiate it immediately.
 
-The full configuration file can be overridden with `LOGIBOOKS_ALTA_CONFIG_PATH`. Without the override, the default is ProgramData on Windows and `/etc/logibooks/alta/appsettings.json` on Linux.
+The installed console shortcut sets `LOGIBOOKS_ALTA_CONFIG_PATH` to the per-user configuration. With no override, the adapter looks for its configuration under `%ProgramData%\Logibooks\Alta` on Windows and at `/etc/logibooks/alta/appsettings.json` on Linux.
 
 ## Development Compose environment
 
