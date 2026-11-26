@@ -37,8 +37,9 @@ internal sealed class AltaSqlSource : IAltaSource
         Enumerable.Range(char.MinValue, char.MaxValue + 1).Select(value => (char)value).Where(char.IsWhiteSpace).ToArray());
 
     private const string SnapshotSql = """
-        SELECT e.AviaNum, e.DOCGID, e.Num, e.CustomsModeCode
+        SELECT e.AviaNum, e.DOCGID, e.RegNum, d.REGNUM, e.CustomsModeCode
         FROM dbo.ExpressCargoDeclarationList AS e
+        LEFT JOIN dbo.Docs AS d ON d.GID = e.DOCGID
         WHERE EXISTS (
             SELECT 1 FROM OPENJSON(@keys) AS k
             WHERE k.[value] COLLATE DATABASE_DEFAULT = TRIM(@whitespace FROM CONVERT(nvarchar(4000), e.AviaNum))
@@ -93,7 +94,8 @@ internal sealed class AltaSqlSource : IAltaSource
             if (!declarations.TryGetValue(ReadText(reader, 0)?.Trim() ?? "", out var rows))
                 continue;
             var id = reader.GetGuid(1);
-            rows.Add(id, new AltaDeclaration(id, ReadText(reader, 2)?.Trim(), ReadText(reader, 3)?.Trim()));
+            var number = AltaSourceValues.ReadDeclarationNumber(ReadText(reader, 2), ReadText(reader, 3));
+            rows.Add(id, new AltaDeclaration(id, number, ReadText(reader, 4)?.Trim()));
         }
 
         await reader.NextResultAsync(token);

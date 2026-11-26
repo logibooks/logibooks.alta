@@ -264,7 +264,7 @@ internal static class DevelopmentDatabase
         const string read = """
             SELECT TOP (0) GID, BLOB, DOCTYP, DOCSIZE, REGNUM, CRDATE, MODDATE, STATUS, EDSTAT FROM dbo.Docs;
             SELECT TOP (0) AVIANUM, DOCGID, Num, REESTRGID, DECISION, ALLWEIGHT FROM dbo.IndPostList;
-            SELECT TOP (0) AviaNum, DOCGID, Num, RegNum, CustomsModeCode FROM dbo.ExpressCargoDeclarationList;
+            SELECT TOP (0) AviaNum, DOCGID, RegNum, CustomsModeCode FROM dbo.ExpressCargoDeclarationList;
             """;
         await ExecuteAsync(connection, read);
         if (writer)

@@ -12,6 +12,8 @@ internal sealed class DevelopmentStore(SqlConnection connection, SqlTransaction 
 {
     private const string IndPostType = "IndPost";
     private const string DeclarationType = "ExpressCargoDeclaration";
+    private static readonly string SqlWhitespace = new(
+        Enumerable.Range(char.MinValue, char.MaxValue + 1).Select(value => (char)value).Where(char.IsWhiteSpace).ToArray());
 
     private sealed record ParcelRow(string Number, Guid Id, Guid? DeclarationId, string? Decision, double? Weight,
         byte[]? Xml);
@@ -98,8 +100,8 @@ internal sealed class DevelopmentStore(SqlConnection connection, SqlTransaction 
             selected.Select(parcel => (parcel.Id, ReadSource(parcel, cmr))));
         await InsertDocumentAsync(id, DeclarationType, xml, number);
         await using var insert = Command("""
-            INSERT dbo.ExpressCargoDeclarationList (DOCGID, AviaNum, Num, RegNum, CustomsModeCode)
-            VALUES (@id, @cmr, @number, @number, @procedure);
+            INSERT dbo.ExpressCargoDeclarationList (DOCGID, AviaNum, RegNum, CustomsModeCode)
+            VALUES (@id, @cmr, @number, @procedure);
             """, ("@id", id), ("@cmr", cmr), ("@number", number), ("@procedure", procedure));
         await insert.ExecuteNonQueryAsync();
         await using var link = Command("UPDATE dbo.IndPostList SET REESTRGID=@reference WHERE DOCGID=@id;",
@@ -172,14 +174,20 @@ internal sealed class DevelopmentStore(SqlConnection connection, SqlTransaction 
     private async Task<DeclarationRow?> FindDeclarationAsync(string number)
     {
         await using var command = Command("""
-            SELECT e.DOCGID, e.AviaNum, COALESCE(e.RegNum, d.REGNUM), e.CustomsModeCode
-            FROM dbo.ExpressCargoDeclarationList AS e JOIN dbo.Docs AS d ON e.DOCGID=d.GID
-            WHERE e.RegNum=@number OR d.REGNUM=@number;
+            SELECT e.DOCGID, e.AviaNum, registration.Number, e.CustomsModeCode
+            FROM dbo.ExpressCargoDeclarationList AS e
+            LEFT JOIN dbo.Docs AS d ON e.DOCGID=d.GID
+            CROSS APPLY (VALUES (COALESCE(
+                NULLIF(TRIM(@whitespace FROM CONVERT(nvarchar(4000), e.RegNum)), N''),
+                TRIM(@whitespace FROM CONVERT(nvarchar(4000), d.REGNUM))
+            ))) AS registration(Number)
+            WHERE registration.Number=@number;
             """, ("@number", number));
+        command.Parameters.Add("@whitespace", SqlDbType.NVarChar, SqlWhitespace.Length).Value = SqlWhitespace;
         await using var reader = await command.ExecuteReaderAsync();
         if (!await reader.ReadAsync())
             return null;
-        var result = new DeclarationRow(reader.GetGuid(0), reader.GetString(1).Trim(), reader.GetString(2).Trim(),
+        var result = new DeclarationRow(reader.GetGuid(0), reader.GetString(1).Trim(), reader.GetString(2),
             reader.GetString(3).Trim());
         if (await reader.ReadAsync())
             throw new InvalidDataException($"DEC {number} is ambiguous.");

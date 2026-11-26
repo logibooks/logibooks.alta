@@ -142,6 +142,14 @@ public sealed class MonitoringTests
         Assert.That(monitor.Submissions.Single().Assignments.Single().ParcelNumber, Is.EqualTo("0001"));
     }
 
+    [TestCase(" LIST-DEC ", " DOC-DEC ", "LIST-DEC")]
+    [TestCase(null, " DOC-DEC ", "DOC-DEC")]
+    [TestCase("\t\u00a0", " DOC-DEC ", "DOC-DEC")]
+    [TestCase(null, " \t", null)]
+    public void DeclarationNumberUsesTheListRegistrationWithDocumentFallback(
+        string? listRegNum, string? documentRegNum, string? expected) =>
+        Assert.That(AltaSourceValues.ReadDeclarationNumber(listRegNum, documentRegNum), Is.EqualTo(expected));
+
     [TestCase(null, "10", "Missing DEC number")]
     [TestCase(" ", "10", "Missing DEC number")]
     [TestCase("DEC-1", null, "Missing or invalid customs procedure")]
