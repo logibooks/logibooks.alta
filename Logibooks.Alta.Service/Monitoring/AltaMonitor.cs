@@ -224,21 +224,34 @@ internal sealed class AltaMonitor(
         {
             if (parcel.DeclarationReference is null)
                 continue;
-            if (AltaSourceValues.ReadDeclarationReference(parcel.DeclarationReference) is not { } id ||
-                !snapshot.Declarations.TryGetValue(id, out var dec))
+            if (AltaSourceValues.ReadDeclarationReference(parcel.DeclarationReference) is not { } id)
             {
-                failure = "Unresolved DEC reference";
+                failure = string.IsNullOrWhiteSpace(parcel.DeclarationReference)
+                    ? $"Missing DEC reference in IndPostList.REESTRGID for IndPost {parcel.Id}"
+                    : $"Invalid DEC reference in IndPostList.REESTRGID for IndPost {parcel.Id} (expected a DEC GUID)";
+                return null;
+            }
+            if (!snapshot.Declarations.TryGetValue(id, out var dec))
+            {
+                failure = $"DEC {id} referenced by IndPostList.REESTRGID for IndPost {parcel.Id} is missing from ExpressCargoDeclarationList for this CMR";
                 return null;
             }
             if (!int.TryParse(parcel.Decision, NumberStyles.None, CultureInfo.InvariantCulture, out var code) ||
                 code is < 1 or > 99)
             {
-                failure = $"Incomplete customs data for IndPost {parcel.Id}";
+                failure = string.IsNullOrWhiteSpace(parcel.Decision)
+                    ? $"Missing customs decision code in IndPostList.DECISION for IndPost {parcel.Id}"
+                    : $"Invalid customs decision code in IndPostList.DECISION for IndPost {parcel.Id} (expected an integer from 1 to 99)";
                 return null;
             }
-            if (declaration is not null && (declaration.Id != dec.Id || decisionCode != code))
+            if (declaration is not null && declaration.Id != dec.Id)
             {
-                failure = "Conflicting DEC or decision codes for this parcel number";
+                failure = $"Conflicting IndPostList.REESTRGID links for IndPost {linked[0].Id} and {parcel.Id}";
+                return null;
+            }
+            if (declaration is not null && decisionCode != code)
+            {
+                failure = $"Conflicting IndPostList.DECISION codes for IndPost {linked[0].Id} and {parcel.Id}";
                 return null;
             }
             declaration = dec;
@@ -254,60 +267,73 @@ internal sealed class AltaMonitor(
         var declaration = observation.Declaration;
         if (string.IsNullOrWhiteSpace(declaration.Number))
         {
-            failure = "Missing DEC number";
+            failure = $"Missing DEC number for DEC {declaration.Id} (ExpressCargoDeclarationList.RegNum and Docs.REGNUM are both blank or absent)";
             return null;
         }
         if (!short.TryParse(declaration.Procedure, NumberStyles.None, CultureInfo.InvariantCulture, out _))
         {
-            failure = "Missing or invalid customs procedure";
+            failure = string.IsNullOrWhiteSpace(declaration.Procedure)
+                ? $"Missing customs procedure in ExpressCargoDeclarationList.CustomsModeCode for DEC {declaration.Id}"
+                : $"Invalid customs procedure in ExpressCargoDeclarationList.CustomsModeCode for DEC {declaration.Id} (expected an integer from 0 to {short.MaxValue})";
             return null;
         }
 
         // Use shipment details only for a queued assignment. XML values never participate in snapshot comparison.
-        if (!read.Shipments.TryGetValue(declaration.Id, out var shipments))
+        if (!read.DeclarationDetails.TryGetValue(declaration.Id, out var details))
         {
-            failure = "Missing or invalid DEC XML";
+            failure = $"Missing Docs record for DEC {declaration.Id} with DOCTYP ExpressCargoDeclaration";
             return null;
         }
-        var linked = new List<(AltaParcel Parcel, AltaShipment Shipment, IReadOnlyList<AltaGoods> Goods)>();
+        if (details.Failure is { } documentFailure)
+        {
+            failure = $"DEC {declaration.Id}: {documentFailure}";
+            return null;
+        }
+
+        var linked = new List<(AltaParcel Parcel, AltaShipment Shipment)>();
         foreach (var parcel in observation.Parcels)
         {
-            if (!shipments.TryGetValue(parcel.Id, out var shipment) || shipment is null || shipment.Number != parcel.Number)
+            if (!details.Shipments.TryGetValue(parcel.Id, out var result))
             {
-                failure = $"Incomplete customs data for IndPost {parcel.Id}";
+                failure = $"DEC {declaration.Id} XML has no GoodsShipment_HouseShipment with IndGid matching IndPost {parcel.Id}";
                 return null;
             }
-            if (shipment.Goods is not { Count: > 0 } goods)
+            if (result.Shipment is not { } shipment)
             {
-                failure = $"Missing or invalid DEC XML goods for IndPost {parcel.Id}";
+                failure = $"DEC {declaration.Id} XML for IndPost {parcel.Id}: {result.Failure}";
                 return null;
             }
-            linked.Add((parcel, shipment, goods));
+            if (shipment.Number != parcel.Number)
+            {
+                failure = $"DEC {declaration.Id} XML HouseWaybillDetails_PrDocumentNumber does not match IndPostList.Num for IndPost {parcel.Id}";
+                return null;
+            }
+            linked.Add((parcel, shipment));
         }
 
         var first = linked[0];
         if (linked.Any(item => !item.Shipment.Payments.SequenceEqual(first.Shipment.Payments)))
         {
-            failure = "Conflicting customs payments for this parcel number";
+            failure = $"Conflicting DEC XML CustomsPaymentDetails across shipments for DEC {declaration.Id}";
             return null;
         }
         var knownTimes = linked.Select(item => item.Shipment.DecisionAt).OfType<DateTimeOffset>().Distinct().Take(2).ToArray();
         if (knownTimes.Length > 1)
         {
-            failure = "Conflicting customs decision times for this parcel number";
+            failure = $"Conflicting DEC XML TaxBase_DecisionDate values across shipments for DEC {declaration.Id}";
             return null;
         }
 
-        if (linked.Any(item => !item.Goods.SequenceEqual(first.Goods)))
+        if (linked.Any(item => !item.Shipment.Goods.SequenceEqual(first.Shipment.Goods)))
         {
-            failure = "Conflicting DEC XML goods for this parcel number";
+            failure = $"Conflicting DEC XML GoodsItemDetails across shipments for DEC {declaration.Id}";
             return null;
         }
 
         var time = linked.All(item => item.Shipment.DecisionAt.HasValue) ? first.Shipment.DecisionAt : null;
         var weights = linked.Select(item => item.Shipment.WeightKg ?? item.Parcel.WeightKg).Distinct().Take(2).ToArray();
         failure = null;
-        return new AltaAssignment(observation.ParcelNumber, first.Goods,
+        return new AltaAssignment(observation.ParcelNumber, first.Shipment.Goods,
             new AltaDecision(observation.DecisionCode, declaration.Procedure!, time), first.Shipment.Payments,
             weights.Length == 1 ? weights[0] : null);
     }

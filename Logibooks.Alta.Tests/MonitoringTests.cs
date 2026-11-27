@@ -50,8 +50,8 @@ public sealed class MonitoringTests
         }, CancellationToken.None);
 
         var snapshot = result.Registers.Single();
-        var goodsCounts = result.Shipments.Values.SelectMany(shipments => shipments.Values)
-            .Select(shipment => shipment?.Goods?.Count ?? 0).ToArray();
+        var goodsCounts = result.DeclarationDetails.Values.SelectMany(details => details.Shipments.Values)
+            .Select(shipment => shipment.Shipment?.Goods.Count ?? 0).ToArray();
         var requestedCount = requested.Values.Sum(ids => ids.Count);
         var resolvedCount = goodsCounts.Count(count => count > 0);
         TestContext.WriteLine($"Read {snapshot.Declarations.Count} DECs and {snapshot.Parcels.Count} IndPost rows in {start.Elapsed.TotalSeconds:F1}s.");
@@ -61,11 +61,11 @@ public sealed class MonitoringTests
         Assert.That(snapshot.Parcels, Is.Not.Empty);
         Assert.That(requestedCount, Is.Positive);
         Assert.That(resolvedCount, Is.EqualTo(requestedCount));
-        foreach (var (declarationId, shipments) in result.Shipments)
-            Assert.That(shipments.Keys, Is.SubsetOf(requested[declarationId]));
+        foreach (var (declarationId, details) in result.DeclarationDetails)
+            Assert.That(details.Shipments.Keys, Is.SubsetOf(requested[declarationId]));
 
         var idle = await source.ReadAsync(target, [cmr!], _ => new Dictionary<Guid, HashSet<Guid>>(), CancellationToken.None);
-        Assert.That(idle.Shipments, Is.Empty);
+        Assert.That(idle.DeclarationDetails, Is.Empty);
     }
 
     [Test]
@@ -150,10 +150,10 @@ public sealed class MonitoringTests
         string? listRegNum, string? documentRegNum, string? expected) =>
         Assert.That(AltaSourceValues.ReadDeclarationNumber(listRegNum, documentRegNum), Is.EqualTo(expected));
 
-    [TestCase(null, "10", "Missing DEC number")]
-    [TestCase(" ", "10", "Missing DEC number")]
-    [TestCase("DEC-1", null, "Missing or invalid customs procedure")]
-    [TestCase("DEC-1", "invalid", "Missing or invalid customs procedure")]
+    [TestCase(null, "10", "ExpressCargoDeclarationList.RegNum and Docs.REGNUM are both blank or absent")]
+    [TestCase(" ", "10", "ExpressCargoDeclarationList.RegNum and Docs.REGNUM are both blank or absent")]
+    [TestCase("DEC-1", null, "Missing customs procedure in ExpressCargoDeclarationList.CustomsModeCode")]
+    [TestCase("DEC-1", "invalid", "Invalid customs procedure in ExpressCargoDeclarationList.CustomsModeCode")]
     public async Task InvalidDeclarationFieldsDeferTheAssignmentWithASpecificWarning(
         string? number, string? procedure, string reason)
     {
@@ -167,7 +167,76 @@ public sealed class MonitoringTests
         await monitor.PollAsync();
 
         Assert.That(monitor.Submissions, Is.Empty);
-        Assert.That(monitor.Logger.Entries, Does.Contain((LogLevel.Warning, $"Deferred Alta Alta / CMR-1 / 0001: {reason}")));
+        var warning = monitor.Logger.Entries.Single(entry => entry.Level == LogLevel.Warning).Message;
+        Assert.That(warning, Does.StartWith("Deferred Alta Alta / CMR-1 / 0001:")
+            .And.Contain(reason).And.Contain(MainDec.ToString()));
+    }
+
+    [TestCase(null, "Missing")]
+    [TestCase("0", "Invalid")]
+    public async Task DeferredSnapshotIdentifiesTheDecisionField(string? decision, string problem)
+    {
+        using var monitor = new MonitoringFixture();
+        var parcel = Parcel("0001") with { Decision = decision };
+        monitor.Put(Snapshot("CMR-1", parcel));
+
+        await monitor.PollAsync();
+
+        Assert.That(monitor.Submissions, Is.Empty);
+        Assert.That(monitor.Logger.Entries.Any(entry => entry.Level == LogLevel.Debug &&
+            entry.Message.Contains($"{problem} customs decision code in IndPostList.DECISION for IndPost {parcel.Id}")), Is.True);
+    }
+
+    private const string ValidGoodsLine = """
+        <GoodsItemDetails>
+          <GoodsDescription>Goods</GoodsDescription>
+          <SupplementaryQuantity_GoodsQuantity>1</SupplementaryQuantity_GoodsQuantity>
+          <CAValueAmount><CurrencyQuantity>5.00</CurrencyQuantity></CAValueAmount>
+        </GoodsItemDetails>
+        """;
+
+    [TestCase(null, "", "no GoodsShipment_HouseShipment with IndGid matching")]
+    [TestCase("", "", "Missing GoodsShipment_HouseShipment/HouseWaybillDetails_PrDocumentNumber")]
+    [TestCase("0001", "", "Missing GoodsShipment_HouseShipment/GoodsItemDetails")]
+    [TestCase("0001", "<CustomsPaymentDetails><PaymentModeCode>1010</PaymentModeCode></CustomsPaymentDetails>",
+        "Missing CustomsPaymentDetails #1/PaymentAmount")]
+    [TestCase("0002", ValidGoodsLine, "HouseWaybillDetails_PrDocumentNumber does not match IndPostList.Num")]
+    public async Task DeferredShipmentWarningIdentifiesTheElement(string? waybillNumber, string details, string reason)
+    {
+        using var monitor = new MonitoringFixture();
+        var parcel = Parcel("0001");
+        monitor.Put(Snapshot("CMR-1", parcel));
+        var shipment = waybillNumber is null ? "" : $"""
+            <GoodsShipment_HouseShipment>
+              <IndGid>{parcel.Id}</IndGid>
+              <HouseWaybillDetails_PrDocumentNumber>{waybillNumber}</HouseWaybillDetails_PrDocumentNumber>
+              {details}
+            </GoodsShipment_HouseShipment>
+            """;
+        monitor.Source.DeclarationXml = $"<AltaExpressCargoDeclaration>{shipment}</AltaExpressCargoDeclaration>";
+
+        await monitor.PollAsync();
+
+        Assert.That(monitor.Submissions, Is.Empty);
+        var warning = monitor.Logger.Entries.Single(entry => entry.Level == LogLevel.Warning).Message;
+        Assert.That(warning, Does.StartWith("Deferred Alta Alta / CMR-1 / 0001:")
+            .And.Contain(reason).And.Contain(parcel.Id.ToString()).And.Contain(MainDec.ToString()));
+    }
+
+    [TestCase("<AltaExpressCargoDeclaration>", "Could not parse DEC XML in Docs.BLOB")]
+    [TestCase("<AltaIndPost/>", "must have an AltaExpressCargoDeclaration root element")]
+    public async Task DeferredDocumentWarningIdentifiesTheXmlFailure(string xml, string reason)
+    {
+        using var monitor = new MonitoringFixture();
+        monitor.Put(Snapshot("CMR-1", Parcel("0001")));
+        monitor.Source.DeclarationXml = xml;
+
+        await monitor.PollAsync();
+
+        Assert.That(monitor.Submissions, Is.Empty);
+        var warning = monitor.Logger.Entries.Single(entry => entry.Level == LogLevel.Warning).Message;
+        Assert.That(warning, Does.StartWith("Deferred Alta Alta / CMR-1 / 0001:")
+            .And.Contain(reason).And.Contain(MainDec.ToString()));
     }
 
     [Test]
@@ -418,6 +487,7 @@ public sealed class MonitoringTests
                 <CustomsPaymentDetails><PaymentModeCode>1010</PaymentModeCode><PaymentCurrencyCode>643</PaymentCurrencyCode><PaymentAmount>100.00</PaymentAmount></CustomsPaymentDetails>
                 <UnifiedGrossWeightQuantity_GoodsQuantity>0.245</UnifiedGrossWeightQuantity_GoodsQuantity>
                 <UnifiedGrossWeightQuantity_MeasureUnitQualifierCode>166</UnifiedGrossWeightQuantity_MeasureUnitQualifierCode>
+                {ValidGoodsLine}
               </GoodsShipment_HouseShipment>
               <GoodsShipment_HouseShipment>
                 <IndGid>{other:D}</IndGid>
@@ -428,11 +498,13 @@ public sealed class MonitoringTests
             """;
         await using var stream = new MemoryStream(Encoding.ASCII.GetBytes(xml));
         var result = await AltaDeclarationDocument.ReadAsync(stream, new HashSet<Guid> { id, other }, CancellationToken.None);
-        Assert.That(result[id]!.Number, Is.EqualTo("0001"));
-        Assert.That(result[id]!.Payments, Is.EqualTo(new[] { new AltaPayment("customsFee", 100m, "RUB") }));
-        Assert.That(result[id]!.DecisionAt, Is.EqualTo(new DateTimeOffset(2026, 4, 16, 12, 37, 45, TimeSpan.FromHours(3))));
-        Assert.That(result[id]!.WeightKg, Is.EqualTo(0.245m));
-        Assert.That(result[other], Is.Null);
+        var shipment = result.Shipments[id].Shipment!;
+        Assert.That(shipment.Number, Is.EqualTo("0001"));
+        Assert.That(shipment.Payments, Is.EqualTo(new[] { new AltaPayment("customsFee", 100m, "RUB") }));
+        Assert.That(shipment.DecisionAt, Is.EqualTo(new DateTimeOffset(2026, 4, 16, 12, 37, 45, TimeSpan.FromHours(3))));
+        Assert.That(shipment.WeightKg, Is.EqualTo(0.245m));
+        Assert.That(result.Shipments[other].Shipment, Is.Null);
+        Assert.That(result.Shipments[other].Failure, Does.StartWith("Invalid CustomsPaymentDetails #1/PaymentModeCode"));
     }
 
     [Test]
@@ -485,15 +557,15 @@ public sealed class MonitoringTests
         await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(xml));
         var result = await AltaDeclarationDocument.ReadAsync(stream, new HashSet<Guid> { id, second }, CancellationToken.None);
 
-        Assert.That(result.Keys, Is.EquivalentTo(new[] { id, second }));
-        Assert.That(result[id]!.Goods, Is.EqualTo(expected));
-        Assert.That(result[second]!.Goods, Is.EqualTo(new[] { new AltaGoods("Second shipment goods", null, 1, 5) }));
+        Assert.That(result.Shipments.Keys, Is.EquivalentTo(new[] { id, second }));
+        Assert.That(result.Shipments[id].Shipment!.Goods, Is.EqualTo(expected));
+        Assert.That(result.Shipments[second].Shipment!.Goods, Is.EqualTo(new[] { new AltaGoods("Second shipment goods", null, 1, 5) }));
     }
 
-    [TestCase("123456789012345678901234567890", "10.00")]
-    [TestCase("1", "0.12345678901234567890123456789")]
-    [TestCase("1", "")]
-    public async Task IncompleteXmlGoodsLinePreventsPartialGoodsList(string quantity, string total)
+    [TestCase("123456789012345678901234567890", "10.00", "Invalid GoodsItemDetails #2/SupplementaryQuantity_GoodsQuantity")]
+    [TestCase("1", "0.12345678901234567890123456789", "Invalid GoodsItemDetails #2/CAValueAmount/CurrencyQuantity")]
+    [TestCase("1", "", "Missing GoodsItemDetails #2/CAValueAmount/CurrencyQuantity")]
+    public async Task IncompleteXmlGoodsLinePreventsPartialGoodsList(string quantity, string total, string reason)
     {
         var id = Guid.NewGuid();
         var xml = $"""
@@ -517,7 +589,8 @@ public sealed class MonitoringTests
         await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(xml));
         var result = await AltaDeclarationDocument.ReadAsync(stream, new HashSet<Guid> { id }, CancellationToken.None);
 
-        Assert.That(result[id]!.Goods, Is.Null);
+        Assert.That(result.Shipments[id].Shipment, Is.Null);
+        Assert.That(result.Shipments[id].Failure, Does.StartWith(reason));
     }
 
     private static readonly Guid MainDec = Guid.NewGuid();
@@ -617,11 +690,12 @@ public sealed class MonitoringTests
         public int MaxRegistersPerRead { get; set; } = int.MaxValue;
         public Action? AfterRead { get; set; }
         public string? Missing { get; set; }
+        public string? DeclarationXml { get; set; }
         public string Description { get; set; } = "Original goods";
         public Dictionary<Guid, string> ParcelDescriptions { get; } = [];
         public IReadOnlyList<AltaPayment> Payments { get; set; } = [];
 
-        public Task<AltaSourceRead> ReadAsync(RuntimeDatabaseTarget target, IReadOnlyList<string> cmrs,
+        public async Task<AltaSourceRead> ReadAsync(RuntimeDatabaseTarget target, IReadOnlyList<string> cmrs,
             Func<IReadOnlyList<AltaRegisterSnapshot>, IReadOnlyDictionary<Guid, HashSet<Guid>>> selectShipments,
             CancellationToken token)
         {
@@ -634,15 +708,27 @@ public sealed class MonitoringTests
             if (requested.Count > 0)
                 Lookups.Add(requested.Values.SelectMany(ids => ids).Select(id => parcels[id].Number)
                     .Distinct(StringComparer.Ordinal).ToArray());
-            var shipments = requested.ToDictionary(declaration => declaration.Key,
-                declaration => (IReadOnlyDictionary<Guid, AltaShipment?>)declaration.Value.ToDictionary(id => id, id =>
+            var details = new Dictionary<Guid, AltaDeclarationDetails>();
+            foreach (var (declarationId, ids) in requested)
+            {
+                if (DeclarationXml is { } xml)
+                {
+                    using var stream = new MemoryStream(Encoding.UTF8.GetBytes(xml));
+                    details.Add(declarationId, await AltaDeclarationDocument.ReadAsync(stream, ids, token));
+                    continue;
+                }
+
+                details.Add(declarationId, new AltaDeclarationDetails(ids.ToDictionary(id => id, id =>
                 {
                     var parcel = parcels[id];
-                    return (AltaShipment?)new AltaShipment(parcel.Number, null, Payments, null,
-                        parcel.Number == Missing ? null : [new(ParcelDescriptions.GetValueOrDefault(id, Description), null, 1, 0)]);
-                }));
+                    return parcel.Number == Missing
+                        ? new AltaShipmentRead(null, "Missing GoodsShipment_HouseShipment/GoodsItemDetails")
+                        : new AltaShipmentRead(new AltaShipment(parcel.Number, null, Payments, null,
+                            [new(ParcelDescriptions.GetValueOrDefault(id, Description), null, 1, 0)]));
+                })));
+            }
             AfterRead?.Invoke();
-            return Task.FromResult(new AltaSourceRead(snapshots, shipments));
+            return new AltaSourceRead(snapshots, details);
         }
     }
 }

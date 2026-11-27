@@ -118,8 +118,12 @@ internal static class DevelopmentDatabase
     {
         await using var stream = File.OpenRead(ManifestPath(BackupPath));
         var manifest = await JsonSerializer.DeserializeAsync<Manifest>(stream, ManifestJson);
-        if (manifest is not { Version: Version, Files.Length: > 0 })
-            throw new InvalidDataException("The Alta development manifest is missing the supported version or file list.");
+        if (manifest is null)
+            throw new InvalidDataException("The Alta development manifest must contain a JSON object.");
+        if (manifest.Version != Version)
+            throw new InvalidDataException($"The Alta development manifest must set version to {Version}.");
+        if (manifest.Files is not { Length: > 0 })
+            throw new InvalidDataException("The Alta development manifest must contain a nonempty files array.");
 
         var files = await ReadFileListAsync(master, BackupPath);
         if (!files.SequenceEqual(manifest.Files))
@@ -129,9 +133,12 @@ internal static class DevelopmentDatabase
             SELECT HASHBYTES('SHA2_256', BulkColumn)
             FROM OPENROWSET(BULK '/baseline/reestr_1.bak', SINGLE_BLOB) AS backup_content;
             """, master);
-        if (await verifyHash.ExecuteScalarAsync() is not byte[] hash ||
-            !string.Equals(manifest.Sha256, Convert.ToHexString(hash), StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("The Alta development backup does not match its manifest.");
+        if (await verifyHash.ExecuteScalarAsync() is not byte[] hash)
+            throw new InvalidDataException("SQL Server did not return the Alta development backup's SHA-256 hash.");
+        if (string.IsNullOrWhiteSpace(manifest.Sha256))
+            throw new InvalidDataException("The Alta development manifest is missing sha256.");
+        if (!string.Equals(manifest.Sha256, Convert.ToHexString(hash), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The Alta development backup's SHA-256 hash does not match the manifest's sha256.");
         await ExecuteAsync(master, "RESTORE VERIFYONLY FROM DISK=@backup WITH CHECKSUM;", ("@backup", BackupPath));
         return files;
     }

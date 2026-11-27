@@ -12,6 +12,10 @@ Every C# source file must begin with this exact header followed by a blank line.
 
 Use the same three lines with `#` comments in YAML and dotenv configuration files, including `.env.example` and generated `.env` files.
 
+## Diagnostics
+
+- When a warning, error, or deferral reports missing, invalid, or conflicting data, name the specific field, element, or record and include the relevant record identifier when available. Distinguish missing data from invalid data when the validation can tell them apart. Include the expected format or constraint when it helps locate or fix the problem. Keep secrets and raw payloads out of diagnostics.
+
 ## Alta polling
 
 - Treat existing records in `ExpressCargoDeclarationList` as immutable. Queue assignments when a linked DEC first appears or when a linked `IndPostList` row is new or changes. Establish the initial snapshot for each monitored CMR and submit its existing linked assignments.

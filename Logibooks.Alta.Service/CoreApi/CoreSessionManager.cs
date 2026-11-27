@@ -185,9 +185,14 @@ internal sealed class CoreSessionManager : ICoreSessionManager, IDisposable
         }
 
         var login = await response.Content.ReadFromJsonAsync<LoginResponse>(cancellationToken);
-        if (login is null || string.IsNullOrWhiteSpace(login.Token))
+        if (login is null)
         {
-            throw new CoreAuthenticationException("Logibooks Core returned an invalid login response.");
+            throw new CoreAuthenticationException("Logibooks Core returned a null login response. Expected a JSON object.");
+        }
+
+        if (string.IsNullOrWhiteSpace(login.Token))
+        {
+            throw new CoreAuthenticationException("The Logibooks Core login response is missing a nonempty token field.");
         }
 
         if (login.Roles is null || !login.Roles.Contains(RequiredRole, StringComparer.OrdinalIgnoreCase))

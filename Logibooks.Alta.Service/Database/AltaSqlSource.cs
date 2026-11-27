@@ -4,7 +4,6 @@
 
 using System.Data;
 using System.Text.Json;
-using System.Xml;
 using Logibooks.Alta.Configuration;
 using Microsoft.Data.SqlClient;
 
@@ -20,7 +19,7 @@ internal sealed record AltaRegisterSnapshot(
 
 internal sealed record AltaSourceRead(
     IReadOnlyList<AltaRegisterSnapshot> Registers,
-    IReadOnlyDictionary<Guid, IReadOnlyDictionary<Guid, AltaShipment?>> Shipments);
+    IReadOnlyDictionary<Guid, AltaDeclarationDetails> DeclarationDetails);
 
 internal interface IAltaSource
 {
@@ -75,9 +74,9 @@ internal sealed class AltaSqlSource : IAltaSource
         var rows = await ReadRegistersAsync(transaction, cmrs, readToken);
         var registers = rows.Select(row => new AltaRegisterSnapshot(row.Cmr, row.Declarations, row.Parcels)).ToArray();
         // Select submissions from the table snapshots before reading their DEC XML.
-        var shipments = await ReadDeclarationDetailsAsync(transaction, selectShipments(registers), readToken);
+        var details = await ReadDeclarationDetailsAsync(transaction, selectShipments(registers), readToken);
         await transaction.CommitAsync(readToken);
-        return new AltaSourceRead(registers, shipments);
+        return new AltaSourceRead(registers, details);
     }
 
     private static async Task<RegisterRows[]> ReadRegistersAsync(SqlTransaction transaction,
@@ -112,12 +111,12 @@ internal sealed class AltaSqlSource : IAltaSource
         return cmrs.Select(cmr => new RegisterRows(cmr, declarations[cmr], parcels[cmr])).ToArray();
     }
 
-    private static async Task<Dictionary<Guid, IReadOnlyDictionary<Guid, AltaShipment?>>> ReadDeclarationDetailsAsync(
+    private static async Task<Dictionary<Guid, AltaDeclarationDetails>> ReadDeclarationDetailsAsync(
         SqlTransaction transaction, IReadOnlyDictionary<Guid, HashSet<Guid>> requestedShipments, CancellationToken token)
     {
-        var shipments = new Dictionary<Guid, IReadOnlyDictionary<Guid, AltaShipment?>>();
+        var details = new Dictionary<Guid, AltaDeclarationDetails>();
         if (requestedShipments.Count == 0)
-            return shipments;
+            return details;
 
         await using var command = CreateCommand(transaction, """
             SELECT d.GID, d.BLOB
@@ -131,19 +130,15 @@ internal sealed class AltaSqlSource : IAltaSource
         {
             var id = reader.GetGuid(0);
             if (await reader.IsDBNullAsync(1, token))
+            {
+                details.Add(id, new AltaDeclarationDetails("Missing DEC XML in Docs.BLOB"));
                 continue;
+            }
 
-            try
-            {
-                await using var stream = reader.GetStream(1);
-                shipments.Add(id, await AltaDeclarationDocument.ReadAsync(stream, requestedShipments[id], token));
-            }
-            catch (XmlException)
-            {
-                // Missing or invalid shipment details defer just the linked parcel numbers.
-            }
+            await using var stream = reader.GetStream(1);
+            details.Add(id, await AltaDeclarationDocument.ReadAsync(stream, requestedShipments[id], token));
         }
-        return shipments;
+        return details;
     }
 
     private static SqlCommand CreateCommand(SqlTransaction transaction, string sql) =>

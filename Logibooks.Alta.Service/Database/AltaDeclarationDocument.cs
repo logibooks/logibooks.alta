@@ -2,6 +2,7 @@
 // All rights reserved.
 // This file is a part of Logibooks Alta adapter
 
+using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text;
 using System.Xml;
@@ -12,7 +13,16 @@ namespace Logibooks.Alta.Database;
 
 internal sealed record AltaShipment(
     string Number, DateTimeOffset? DecisionAt, IReadOnlyList<AltaPayment> Payments, decimal? WeightKg,
-    IReadOnlyList<AltaGoods>? Goods);
+    IReadOnlyList<AltaGoods> Goods);
+
+internal readonly record struct AltaShipmentRead(AltaShipment? Shipment, string? Failure = null);
+
+internal sealed record AltaDeclarationDetails(IReadOnlyDictionary<Guid, AltaShipmentRead> Shipments, string? Failure = null)
+{
+    public AltaDeclarationDetails(string failure) : this(ReadOnlyDictionary<Guid, AltaShipmentRead>.Empty, failure)
+    {
+    }
+}
 
 internal static class AltaDeclarationDocument
 {
@@ -21,7 +31,7 @@ internal static class AltaDeclarationDocument
 
     static AltaDeclarationDocument() => Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-    public static async Task<IReadOnlyDictionary<Guid, AltaShipment?>> ReadAsync(Stream stream,
+    public static async Task<AltaDeclarationDetails> ReadAsync(Stream stream,
         IReadOnlySet<Guid> parcelIds, CancellationToken token)
     {
         using var reader = XmlReader.Create(stream, new XmlReaderSettings
@@ -30,11 +40,21 @@ internal static class AltaDeclarationDocument
             DtdProcessing = DtdProcessing.Prohibit,
             MaxCharactersInDocument = 32_000_000
         });
-        var document = await XDocument.LoadAsync(reader, LoadOptions.None, token);
-        var shipments = new Dictionary<Guid, AltaShipment?>();
-        if (document.Root is not { } root || root.Name.LocalName != "AltaExpressCargoDeclaration")
-            return shipments;
 
+        XDocument document;
+        try
+        {
+            document = await XDocument.LoadAsync(reader, LoadOptions.None, token);
+        }
+        catch (XmlException exception)
+        {
+            return new AltaDeclarationDetails(
+                $"Could not parse DEC XML in Docs.BLOB (line {exception.LineNumber}, position {exception.LinePosition})");
+        }
+        if (document.Root is not { } root || root.Name.LocalName != "AltaExpressCargoDeclaration")
+            return new AltaDeclarationDetails("DEC XML in Docs.BLOB must have an AltaExpressCargoDeclaration root element");
+
+        var shipments = new Dictionary<Guid, AltaShipmentRead>();
         foreach (var shipment in Children(root, "GoodsShipment_HouseShipment"))
         {
             token.ThrowIfCancellationRequested();
@@ -43,26 +63,30 @@ internal static class AltaDeclarationDocument
 
             // Duplicate shipments for the same IndPost document make the assignment ambiguous.
             if (!shipments.TryAdd(id, ReadShipment(shipment)))
-                shipments[id] = null;
+                shipments[id] = new(null, "Multiple GoodsShipment_HouseShipment elements have the same IndGid");
         }
-        return shipments;
+        return new AltaDeclarationDetails(shipments);
     }
 
-    private static AltaShipment? ReadShipment(XElement shipment)
+    private static AltaShipmentRead ReadShipment(XElement shipment)
     {
         var number = Value(shipment, "HouseWaybillDetails_PrDocumentNumber");
         if (string.IsNullOrEmpty(number))
-            return null;
+            return new(null, "Missing GoodsShipment_HouseShipment/HouseWaybillDetails_PrDocumentNumber");
 
         var payments = new List<AltaPayment>();
+        var paymentIndex = 0;
         foreach (var payment in Children(shipment, "CustomsPaymentDetails"))
         {
+            paymentIndex++;
             var mode = Value(payment, "PaymentModeCode");
             var amountText = Value(payment, "PaymentAmount");
             if (string.IsNullOrEmpty(mode) && string.IsNullOrEmpty(amountText))
                 continue;
+            if (string.IsNullOrEmpty(amountText))
+                return new(null, $"Missing CustomsPaymentDetails #{paymentIndex}/PaymentAmount");
             if (!AltaSourceValues.TryReadDecimal(amountText, out var amount) || amount < 0)
-                return null;
+                return new(null, $"Invalid CustomsPaymentDetails #{paymentIndex}/PaymentAmount (expected a nonnegative decimal)");
 
             var kind = mode switch
             {
@@ -70,7 +94,13 @@ internal static class AltaDeclarationDocument
                 "2010" or "5010" => "dutiesAndTaxes",
                 _ => null
             };
-            var currency = Value(payment, "PaymentCurrencyCode") switch
+            if (kind is null)
+                return new(null, string.IsNullOrEmpty(mode)
+                    ? $"Missing CustomsPaymentDetails #{paymentIndex}/PaymentModeCode"
+                    : $"Invalid CustomsPaymentDetails #{paymentIndex}/PaymentModeCode (expected 1010, 2010, or 5010)");
+
+            var currencyCode = Value(payment, "PaymentCurrencyCode");
+            var currency = currencyCode switch
             {
                 "643" => "RUB",
                 "978" => "EUR",
@@ -78,44 +108,73 @@ internal static class AltaDeclarationDocument
                 { Length: 3 } alpha when alpha.All(char.IsAsciiLetterUpper) => alpha,
                 _ => null
             };
-            if (kind is null || currency is null)
-                return null;
+            if (currency is null)
+                return new(null, string.IsNullOrEmpty(currencyCode)
+                    ? $"Missing CustomsPaymentDetails #{paymentIndex}/PaymentCurrencyCode"
+                    : $"Invalid CustomsPaymentDetails #{paymentIndex}/PaymentCurrencyCode (expected 643, 978, 840, or three uppercase letters)");
 
             payments.Add(new AltaPayment(kind, amount, currency));
         }
-
         var date = Value(shipment, "TaxBase_DecisionDate");
         var decisionAt = date is { Length: > 19 } && (date.EndsWith('Z') || date[^6] is '+' or '-') &&
             DateTimeOffset.TryParseExact(date, DecisionTimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time)
             ? time : (DateTimeOffset?)null;
-
         var weightKg = Value(shipment, "UnifiedGrossWeightQuantity_MeasureUnitQualifierCode") == "166" &&
             AltaSourceValues.TryReadDecimal(Value(shipment, "UnifiedGrossWeightQuantity_GoodsQuantity"), out var weight) &&
             weight is >= 0 and < 10_000_000 ? weight : (decimal?)null;
+        var goods = ReadGoods(shipment, out var failure);
+        if (goods is null)
+            return new(null, failure);
 
-        return new AltaShipment(number, decisionAt,
+        return new(new AltaShipment(number, decisionAt,
             payments.OrderBy(payment => payment.Kind, StringComparer.Ordinal)
                 .ThenBy(payment => payment.Currency, StringComparer.Ordinal).ThenBy(payment => payment.Amount).ToArray(),
-            weightKg, ReadGoods(shipment));
+            weightKg, goods));
     }
 
-    private static IReadOnlyList<AltaGoods>? ReadGoods(XElement shipment)
+    private static IReadOnlyList<AltaGoods>? ReadGoods(XElement shipment, out string? failure)
     {
         var goods = new List<AltaGoods>();
         foreach (var item in Children(shipment, "GoodsItemDetails"))
         {
+            var itemIndex = goods.Count + 1;
             var description = Children(item, "GoodsDescription").FirstOrDefault()?.Value;
+            if (string.IsNullOrWhiteSpace(description))
+            {
+                failure = $"Missing GoodsItemDetails #{itemIndex}/GoodsDescription";
+                return null;
+            }
+
             // The first CAValueAmount carries the total in the invoice currency.
             var declaredValue = Children(item, "CAValueAmount").FirstOrDefault();
-            // Core validates business rules for the parsed values and records any rejection.
-            if (string.IsNullOrWhiteSpace(description) || declaredValue is null ||
-                !AltaSourceValues.TryReadDecimal(Value(item, "SupplementaryQuantity_GoodsQuantity"), out var quantity) ||
-                !AltaSourceValues.TryReadDecimal(Value(declaredValue, "CurrencyQuantity"), out var total))
+            if (declaredValue is null)
+            {
+                failure = $"Missing GoodsItemDetails #{itemIndex}/CAValueAmount";
                 return null;
+            }
+
+            // Core validates business rules for the parsed values and records any rejection.
+            var quantityText = Value(item, "SupplementaryQuantity_GoodsQuantity");
+            if (!AltaSourceValues.TryReadDecimal(quantityText, out var quantity))
+            {
+                failure = string.IsNullOrEmpty(quantityText)
+                    ? $"Missing GoodsItemDetails #{itemIndex}/SupplementaryQuantity_GoodsQuantity"
+                    : $"Invalid GoodsItemDetails #{itemIndex}/SupplementaryQuantity_GoodsQuantity (expected a decimal)";
+                return null;
+            }
+            var totalText = Value(declaredValue, "CurrencyQuantity");
+            if (!AltaSourceValues.TryReadDecimal(totalText, out var total))
+            {
+                failure = string.IsNullOrEmpty(totalText)
+                    ? $"Missing GoodsItemDetails #{itemIndex}/CAValueAmount/CurrencyQuantity"
+                    : $"Invalid GoodsItemDetails #{itemIndex}/CAValueAmount/CurrencyQuantity (expected a decimal)";
+                return null;
+            }
 
             var tnVed = Value(item, "GoodsTNVEDCode");
             goods.Add(new AltaGoods(description, string.IsNullOrEmpty(tnVed) ? null : tnVed, quantity, total));
         }
+        failure = goods.Count == 0 ? "Missing GoodsShipment_HouseShipment/GoodsItemDetails" : null;
         return goods.Count == 0 ? null : goods;
     }
 
