@@ -20,7 +20,7 @@ UsePreviousGroup=no
 DisableReadyMemo=yes
 ; Keep the Windows service as the default for existing silent deployments.
 PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequiredOverridesAllowed=commandline dialog
 UsePreviousPrivileges=no
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os

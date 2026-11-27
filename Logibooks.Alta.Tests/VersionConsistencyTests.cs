@@ -62,7 +62,7 @@ public sealed class VersionConsistencyTests
             Assert.That(installer, Does.Contain("AppId=Logibooks.Alta.Adapter"));
             Assert.That(installer, Does.Contain("AppVersion={#AppVersion}"));
             Assert.That(installer, Does.Contain("PrivilegesRequired=admin"));
-            Assert.That(installer, Does.Contain("PrivilegesRequiredOverridesAllowed=dialog"));
+            Assert.That(installer, Does.Contain("PrivilegesRequiredOverridesAllowed=commandline dialog"));
             Assert.That(installer, Does.Contain(@"DefaultDirName={autopf}\Logibooks\Alta"));
             Assert.That(installer, Does.Contain("if (CurStep <> ssPostInstall) or not IsAdminInstallMode then"));
             Assert.That(installer, Does.Contain("RunAdapter('/Install')"));
