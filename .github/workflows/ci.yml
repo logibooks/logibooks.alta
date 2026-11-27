@@ -166,3 +166,43 @@ jobs:
           }
           if (Get-Service -Name LogibooksAltaAdapter -ErrorAction SilentlyContinue) { throw 'Uninstall left the service registered.' }
           if ((Get-FileHash -LiteralPath $config).Hash -ne $configHash) { throw 'Uninstall changed the configuration.' }
+
+      - name: Smoke-test side-by-side installs in both orders
+        shell: pwsh
+        run: |
+          $setup = '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe'
+          $silent = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+          $installDirs = @{
+            '/ALLUSERS' = "$env:ProgramFiles\Logibooks\Alta"
+            '/CURRENTUSER' = "$env:LOCALAPPDATA\Programs\Logibooks\Alta"
+          }
+          $uninstallKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Logibooks.Alta.Adapter_is1'
+          $registryKeys = @{ '/ALLUSERS' = "HKLM:\$uninstallKey"; '/CURRENTUSER' = "HKCU:\$uninstallKey" }
+
+          foreach ($first in '/ALLUSERS', '/CURRENTUSER') {
+            $second = if ($first -eq '/ALLUSERS') { '/CURRENTUSER' } else { '/ALLUSERS' }
+            try {
+              foreach ($mode in $first, $second) {
+                $install = Start-Process -FilePath $setup -ArgumentList "$mode $silent" -WindowStyle Hidden -Wait -PassThru
+                if ($install.ExitCode -ne 0) { throw "Setup in $mode mode failed with exit code $($install.ExitCode)." }
+              }
+              foreach ($mode in $first, $second) {
+                $location = Get-ItemPropertyValue -LiteralPath $registryKeys[$mode] -Name InstallLocation
+                $adapter = Join-Path $installDirs[$mode] 'Logibooks.Alta.Adapter.exe'
+                if ($location.TrimEnd('\') -ne $installDirs[$mode] -or !(Test-Path -LiteralPath $adapter -PathType Leaf)) {
+                  throw "Setup in $mode mode did not install to $($installDirs[$mode])."
+                }
+              }
+            } finally {
+              foreach ($mode in $second, $first) {
+                $uninstaller = Join-Path $installDirs[$mode] 'unins000.exe'
+                if (Test-Path -LiteralPath $uninstaller) {
+                  $uninstall = Start-Process -FilePath $uninstaller -ArgumentList $silent -WindowStyle Hidden -Wait -PassThru
+                  if ($uninstall.ExitCode -ne 0) { throw "Uninstall in $mode mode failed with exit code $($uninstall.ExitCode)." }
+                }
+              }
+            }
+            if (Test-Path -LiteralPath @($registryKeys.Values) | Where-Object { $_ }) {
+              throw 'Uninstall left an installer registration.'
+            }
+          }

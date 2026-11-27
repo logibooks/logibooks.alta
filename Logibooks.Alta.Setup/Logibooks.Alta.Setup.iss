@@ -11,6 +11,8 @@ VersionInfoVersion={#AppVersion}
 VersionInfoProductName=Logibooks Alta Adapter
 AppPublisher=Logibooks
 DefaultDirName={autopf}\Logibooks\Alta
+; Inno reads the previous directory in the selected install mode, preserving custom console paths.
+UsePreviousAppDir=yes
 DefaultGroupName=Logibooks
 DisableDirPage=yes
 DisableProgramGroupPage=yes
