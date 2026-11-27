@@ -46,7 +46,7 @@ public sealed class DevToolTests
             [(parcelId, parcel)]));
         var shipments = await AltaDeclarationDocument.ReadAsync(declaration, new HashSet<Guid> { parcelId },
             CancellationToken.None);
-        var shipment = shipments[parcelId]!;
+        var shipment = shipments.Shipments[parcelId].Shipment!;
         Assert.Multiple(() =>
         {
             Assert.That(parcel.WeightKg, Is.EqualTo(1.25m));
