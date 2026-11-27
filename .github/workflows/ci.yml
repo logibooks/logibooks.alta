@@ -71,6 +71,62 @@ jobs:
         shell: pwsh
         run: .\scripts\Build-Installer.ps1 -Configuration Release
 
+      - name: Smoke-test the per-user console install
+        shell: pwsh
+        run: |
+          $setup = '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe'
+          $app = "$env:LOCALAPPDATA\Programs\Logibooks\Alta"
+          $uninstaller = Join-Path $app 'unins000.exe'
+          $config = "$env:LOCALAPPDATA\Logibooks\Alta\appsettings.json"
+          $logs = "$env:LOCALAPPDATA\Logibooks\Alta\Logs\alta-*.log"
+          $shortcuts = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Logibooks"
+          $startShortcut = Join-Path $shortcuts 'Start Alta adapter in console mode.lnk'
+          $configShortcut = Join-Path $shortcuts 'Open Alta adapter configuration.lnk'
+          $output = Join-Path $env:RUNNER_TEMP 'alta-console.stdout.log'
+          $silent = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+          try {
+            $install = Start-Process -FilePath $setup -ArgumentList "/CURRENTUSER /LANG=english $silent" -WindowStyle Hidden -Wait -PassThru
+            if ($install.ExitCode -ne 0) { throw "Console setup failed with exit code $($install.ExitCode)." }
+            if (!(Test-Path -LiteralPath $startShortcut) -or !(Test-Path -LiteralPath $configShortcut)) {
+              throw 'Console setup did not create both Start menu shortcuts.'
+            }
+
+            $console = Start-Process -FilePath $env:ComSpec -ArgumentList '/d /c Run-Alta.cmd' `
+              -WorkingDirectory $app -RedirectStandardOutput $output -WindowStyle Hidden -PassThru
+            try {
+              $deadline = [DateTime]::UtcNow.AddSeconds(30)
+              $message = 'Integration monitoring is disabled; waiting for configuration'
+              while ($true) {
+                if ($console.HasExited) { throw "The console adapter exited with code $($console.ExitCode)." }
+                $consoleLogged = Get-Content -Path $output -ErrorAction SilentlyContinue | Select-String -SimpleMatch $message -Quiet
+                $fileLogged = Get-Content -Path $logs -ErrorAction SilentlyContinue | Select-String -SimpleMatch $message -Quiet
+                if ($consoleLogged -and $fileLogged) { break }
+                if ([DateTime]::UtcNow -ge $deadline) { throw 'The console adapter did not log to the console and user profile.' }
+                Start-Sleep -Seconds 1
+              }
+            } finally {
+              if (!$console.HasExited) {
+                $console.Kill($true)
+                $console.WaitForExit()
+              }
+              $console.Dispose()
+            }
+
+            Add-Content -LiteralPath $config -Value ' '
+            $configHash = (Get-FileHash -LiteralPath $config).Hash
+            $reinstall = Start-Process -FilePath $setup -ArgumentList "/CURRENTUSER /LANG=english $silent" -WindowStyle Hidden -Wait -PassThru
+            if ($reinstall.ExitCode -ne 0) { throw "Console reinstall failed with exit code $($reinstall.ExitCode)." }
+            if ((Get-FileHash -LiteralPath $config).Hash -ne $configHash) { throw 'Console reinstall replaced the configuration.' }
+          } finally {
+            if (Test-Path -LiteralPath $uninstaller) {
+              $uninstall = Start-Process -FilePath $uninstaller -ArgumentList $silent -WindowStyle Hidden -Wait -PassThru
+              if ($uninstall.ExitCode -ne 0) { throw "Console uninstall failed with exit code $($uninstall.ExitCode)." }
+            }
+          }
+          if ((Get-FileHash -LiteralPath $config).Hash -ne $configHash) { throw 'Console uninstall changed the configuration.' }
+          if ((Test-Path -LiteralPath $startShortcut) -or (Test-Path -LiteralPath $configShortcut)) { throw 'Console uninstall left a shortcut.' }
+          if (Get-Service -Name LogibooksAltaAdapter -ErrorAction SilentlyContinue) { throw 'Console setup registered a service.' }
+
       - name: Smoke-test the Windows service install
         shell: pwsh
         run: |
@@ -81,7 +137,8 @@ jobs:
           $silent = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
           try {
             foreach ($attempt in 1..2) {
-              $install = Start-Process -FilePath $setup -ArgumentList $silent -WindowStyle Hidden -Wait -PassThru
+              $setupArguments = if ($attempt -eq 1) { $silent } else { "/ALLUSERS $silent" }
+              $install = Start-Process -FilePath $setup -ArgumentList $setupArguments -WindowStyle Hidden -Wait -PassThru
               if ($install.ExitCode -ne 0) { throw "Service setup failed with exit code $($install.ExitCode)." }
               $service = Get-Service -Name LogibooksAltaAdapter
               try {
@@ -109,3 +166,43 @@ jobs:
           }
           if (Get-Service -Name LogibooksAltaAdapter -ErrorAction SilentlyContinue) { throw 'Uninstall left the service registered.' }
           if ((Get-FileHash -LiteralPath $config).Hash -ne $configHash) { throw 'Uninstall changed the configuration.' }
+
+      - name: Smoke-test side-by-side installs in both orders
+        shell: pwsh
+        run: |
+          $setup = '.\Logibooks.Alta.Setup\Release\Logibooks.Alta.Adapter.Setup.exe'
+          $silent = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+          $installDirs = @{
+            '/ALLUSERS' = "$env:ProgramFiles\Logibooks\Alta"
+            '/CURRENTUSER' = "$env:LOCALAPPDATA\Programs\Logibooks\Alta"
+          }
+          $uninstallKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Logibooks.Alta.Adapter_is1'
+          $registryKeys = @{ '/ALLUSERS' = "HKLM:\$uninstallKey"; '/CURRENTUSER' = "HKCU:\$uninstallKey" }
+
+          foreach ($first in '/ALLUSERS', '/CURRENTUSER') {
+            $second = if ($first -eq '/ALLUSERS') { '/CURRENTUSER' } else { '/ALLUSERS' }
+            try {
+              foreach ($mode in $first, $second) {
+                $install = Start-Process -FilePath $setup -ArgumentList "$mode $silent" -WindowStyle Hidden -Wait -PassThru
+                if ($install.ExitCode -ne 0) { throw "Setup in $mode mode failed with exit code $($install.ExitCode)." }
+              }
+              foreach ($mode in $first, $second) {
+                $location = Get-ItemPropertyValue -LiteralPath $registryKeys[$mode] -Name InstallLocation
+                $adapter = Join-Path $installDirs[$mode] 'Logibooks.Alta.Adapter.exe'
+                if ($location.TrimEnd('\') -ne $installDirs[$mode] -or !(Test-Path -LiteralPath $adapter -PathType Leaf)) {
+                  throw "Setup in $mode mode did not install to $($installDirs[$mode])."
+                }
+              }
+            } finally {
+              foreach ($mode in $second, $first) {
+                $uninstaller = Join-Path $installDirs[$mode] 'unins000.exe'
+                if (Test-Path -LiteralPath $uninstaller) {
+                  $uninstall = Start-Process -FilePath $uninstaller -ArgumentList $silent -WindowStyle Hidden -Wait -PassThru
+                  if ($uninstall.ExitCode -ne 0) { throw "Uninstall in $mode mode failed with exit code $($uninstall.ExitCode)." }
+                }
+              }
+            }
+            if (Test-Path -LiteralPath @($registryKeys.Values) | Where-Object { $_ }) {
+              throw 'Uninstall left an installer registration.'
+            }
+          }
