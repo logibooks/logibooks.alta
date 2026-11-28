@@ -20,7 +20,6 @@ internal sealed class AltaMonitor(
     IMssqlProbe? databaseProbe = null)
 {
     private const int RegistersPerRead = 64;
-    private const int AssignmentsPerRequest = 200;
     private const int TimedOutReadsPerCycle = 3;
     private readonly Dictionary<string, TargetState> _targets = new(StringComparer.Ordinal);
 
@@ -101,22 +100,29 @@ internal sealed class AltaMonitor(
             var size = Math.Min(cmrs.Length - offset, state.ReadLimits.GetValueOrDefault(cmrs[offset], RegistersPerRead));
             var group = cmrs[offset..(offset + size)];
             var now = clock.GetUtcNow();
-            var projection = new Dictionary<string, Dictionary<string, Delivery>>(StringComparer.Ordinal);
+            var projection = new Dictionary<string,
+                (Dictionary<string, Delivery> Deliveries, IGrouping<Guid, Delivery>[] DueDeclarations)>(StringComparer.Ordinal);
             AltaSourceRead read;
             try
             {
+                // Read both tables by CMR, then compare the full register before selecting any DEC XML.
                 read = await source.ReadAsync(target, group, snapshots =>
                 {
                     foreach (var snapshot in snapshots)
                     {
                         state.Registers.TryGetValue(snapshot.Cmr, out var baseline);
-                        projection.Add(snapshot.Cmr, CompareSnapshot(target, snapshot, baseline));
+                        var deliveries = CompareSnapshot(target, snapshot, baseline);
+                        var dueDeclarations = deliveries.Values.Where(item => item.IsDue(now))
+                            .GroupBy(item => item.Observation.Declaration.Id).ToArray();
+                        projection.Add(snapshot.Cmr, (deliveries, dueDeclarations));
                     }
-                    return projection.Values.SelectMany(deliveries => deliveries.Values)
-                        .Where(item => item.IsDue(now))
-                        .GroupBy(item => item.Observation.Declaration.Id)
+
+                    // Reuse the due DEC groups for submission. Request each DOCGID once in this SQL read.
+                    return projection.Values.SelectMany(register => register.DueDeclarations)
+                        .GroupBy(declaration => declaration.Key)
                         .ToDictionary(declaration => declaration.Key,
-                            declaration => declaration.SelectMany(item => item.Observation.Parcels)
+                            declaration => declaration.SelectMany(group => group)
+                                .SelectMany(item => item.Observation.Parcels)
                                 .Select(parcel => parcel.Id).ToHashSet());
                 }, token);
             }
@@ -151,13 +157,14 @@ internal sealed class AltaMonitor(
             if (!IsCurrent(configuration, target, scope, token))
                 return;
 
+            // Keep every delivery in the baseline after the SQL transaction completes.
             foreach (var snapshot in read.Registers)
-                state.Registers[snapshot.Cmr] = new RegisterState(snapshot, projection[snapshot.Cmr]);
+                state.Registers[snapshot.Cmr] = new RegisterState(snapshot, projection[snapshot.Cmr].Deliveries);
 
             foreach (var snapshot in read.Registers)
             {
-                var deliveries = projection[snapshot.Cmr].Values.Where(item => item.IsDue(now));
-                if (!await SubmitAsync(configuration, scope, target, snapshot.Cmr, deliveries, read, token))
+                var declarations = projection[snapshot.Cmr].DueDeclarations;
+                if (!await SubmitDeclarationsAsync(configuration, scope, target, snapshot.Cmr, declarations, read, token))
                 {
                     if (IsCurrent(configuration, target, scope, token) &&
                         core.GetWorklistStatus(target.Name) is { IsStale: false, Cmrs: { } refreshed })
@@ -341,14 +348,14 @@ internal sealed class AltaMonitor(
             weights.Length == 1 ? weights[0] : null);
     }
 
-    private async Task<bool> SubmitAsync(RuntimeConfiguration configuration, CoreOptions scope, RuntimeDatabaseTarget target,
-        string cmr, IEnumerable<Delivery> deliveries, AltaSourceRead read,
+    private async Task<bool> SubmitDeclarationsAsync(RuntimeConfiguration configuration, CoreOptions scope,
+        RuntimeDatabaseTarget target, string cmr, IEnumerable<IGrouping<Guid, Delivery>> declarations, AltaSourceRead read,
         CancellationToken token)
     {
-        foreach (var group in deliveries.GroupBy(item => item.Observation.Declaration.Number, StringComparer.Ordinal))
+        foreach (var declaration in declarations)
         {
             var ready = new List<(Delivery Delivery, AltaAssignment Assignment)>();
-            foreach (var delivery in group.OrderBy(item => item.Observation.ParcelNumber, StringComparer.Ordinal))
+            foreach (var delivery in declaration.OrderBy(item => item.Observation.ParcelNumber, StringComparer.Ordinal))
             {
                 var assignment = BuildAssignment(target.Name, cmr, delivery.Observation, read, out var failure);
                 if (assignment is null)
@@ -361,47 +368,49 @@ internal sealed class AltaMonitor(
                 ready.Add((delivery, assignment));
             }
 
-            foreach (var batch in ready.Chunk(AssignmentsPerRequest))
+            if (ready.Count == 0)
+                continue;
+            if (!IsCurrent(configuration, target, scope, token))
+                return false;
+
+            // Send all ready parcels for this DOCGID together. Different DOCGIDs can share a registration number.
+            var decNumber = ready[0].Delivery.Observation.Declaration.Number!;
+            try
+            {
+                var payload = new AltaBatch(cmr, decNumber, ready.Select(item => item.Assignment).ToArray());
+                var result = await RequestInScopeAsync(configuration, target,
+                    current => core.SubmitAsync(current, target.Name, payload, token), token);
+                if (!IsCurrent(configuration, target, scope, token))
+                    return false;
+                foreach (var item in result.Results)
+                {
+                    var delivery = ready[item.Index].Delivery;
+                    delivery.Handled = true;
+                    if (item.Outcome == "error")
+                    {
+                        logger.LogWarning("Core rejected Alta {DatabaseTarget} / {Cmr} / {ParcelNumber}: {Code} {Message}",
+                            target.Name, cmr, delivery.Observation.ParcelNumber, item.Code,
+                            SensitiveDataSanitizer.Sanitize(item.Message ?? "", configuration));
+                    }
+                }
+                logger.LogInformation("Core saved {DecisionCount} Alta decisions for {DatabaseTarget} / {Cmr} / {Dec} ({DecId})",
+                    result.AcceptedCount, target.Name, cmr, decNumber, declaration.Key);
+            }
+            catch (CoreRequestException exception) when (exception.StatusCode == HttpStatusCode.Conflict &&
+                exception.Code is "AltaCmrUnavailable" or "AltaScopeChanged")
+            {
+                logger.LogWarning("Core worklist changed for {DatabaseTarget} / {Cmr}: {Code}", target.Name, cmr, exception.Code);
+                return false;
+            }
+            catch (Exception exception) when (!token.IsCancellationRequested)
             {
                 if (!IsCurrent(configuration, target, scope, token))
                     return false;
-                try
-                {
-                    var payload = new AltaBatch(cmr, group.Key!, batch.Select(item => item.Assignment).ToArray());
-                    var result = await RequestInScopeAsync(configuration, target,
-                        current => core.SubmitAsync(current, target.Name, payload, token), token);
-                    if (!IsCurrent(configuration, target, scope, token))
-                        return false;
-                    foreach (var item in result.Results)
-                    {
-                        var delivery = batch[item.Index].Delivery;
-                        delivery.Handled = true;
-                        if (item.Outcome == "error")
-                        {
-                            logger.LogWarning("Core rejected Alta {DatabaseTarget} / {Cmr} / {ParcelNumber}: {Code} {Message}",
-                                target.Name, cmr, delivery.Observation.ParcelNumber, item.Code,
-                                SensitiveDataSanitizer.Sanitize(item.Message ?? "", configuration));
-                        }
-                    }
-                    logger.LogInformation("Core saved {DecisionCount} Alta decisions for {DatabaseTarget} / {Cmr} / {Dec}",
-                        result.AcceptedCount, target.Name, cmr, group.Key);
-                }
-                catch (CoreRequestException exception) when (exception.StatusCode == HttpStatusCode.Conflict &&
-                    exception.Code is "AltaCmrUnavailable" or "AltaScopeChanged")
-                {
-                    logger.LogWarning("Core worklist changed for {DatabaseTarget} / {Cmr}: {Code}",
-                        target.Name, cmr, exception.Code);
-                    return false;
-                }
-                catch (Exception exception) when (!token.IsCancellationRequested)
-                {
-                    if (!IsCurrent(configuration, target, scope, token))
-                        return false;
-                    logger.LogWarning("Alta submission failed for {DatabaseTarget} / {Cmr}: {Failure}", target.Name, cmr,
-                        SensitiveDataSanitizer.Sanitize(AltaCoreClient.DescribeReadFailure(exception), configuration));
-                    foreach (var item in batch)
-                        item.Delivery.Defer(clock.GetUtcNow());
-                }
+                logger.LogWarning("Alta submission failed for {DatabaseTarget} / {Cmr} / {Dec} ({DecId}): {Failure}",
+                    target.Name, cmr, decNumber, declaration.Key,
+                    SensitiveDataSanitizer.Sanitize(AltaCoreClient.DescribeReadFailure(exception), configuration));
+                foreach (var item in ready)
+                    item.Delivery.Defer(clock.GetUtcNow());
             }
         }
         return true;

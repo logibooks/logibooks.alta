@@ -2,8 +2,9 @@
 // All rights reserved.
 // This file is a part of Logibooks Alta adapter
 
-using System.Net;
 using System.Diagnostics;
+using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using Logibooks.Alta.Configuration;
@@ -95,6 +96,90 @@ public sealed class MonitoringTests
         monitor.Put(Snapshot("CMR-1", first with { Decision = "90" }, unchanged, newDec), Snapshot("CMR-2", second));
         await monitor.PollAsync();
         Assert.That(monitor.Submissions.Last().Assignments.Single().ParcelNumber, Is.EqualTo("0004"));
+    }
+
+    [TestCase(500)]
+    [TestCase(501)]
+    public async Task SubmitsAllParcelsFromOneDeclarationInOneRequest(int parcelCount)
+    {
+        using var monitor = new MonitoringFixture();
+        var parcels = Enumerable.Range(1, parcelCount)
+            .Select(index => Parcel(index.ToString("D4", CultureInfo.InvariantCulture))).ToArray();
+        parcels[199] = parcels[199] with { Decision = "70" };
+        parcels[200] = parcels[200] with { Decision = "90" };
+        monitor.Put(Snapshot("CMR-1", parcels));
+        var shipments = string.Concat(parcels.Select(parcel => ShipmentXml(parcel.Id, parcel.Number, ValidGoodsLine)));
+        monitor.Source.DeclarationXml[MainDec] = $"<AltaExpressCargoDeclaration>{shipments}</AltaExpressCargoDeclaration>";
+
+        await monitor.PollAsync();
+
+        var batch = monitor.Submissions.Single();
+        Assert.That(batch.Assignments.Select(item => item.ParcelNumber), Is.EqualTo(parcels.Select(parcel => parcel.Number)));
+        Assert.That(batch.Assignments[199].Decision.Code, Is.EqualTo(70));
+        Assert.That(batch.Assignments[200].Decision.Code, Is.EqualTo(90));
+        Assert.That(monitor.Source.XmlReads, Is.EqualTo(new[] { MainDec }));
+
+        await monitor.PollAsync();
+
+        Assert.That(monitor.Submissions, Has.Count.EqualTo(1));
+        Assert.That(monitor.Source.XmlReads, Is.EqualTo(new[] { MainDec }));
+    }
+
+    [Test]
+    public async Task SubmitsEachDeclarationSeparatelyWhenTheyShareARegistrationNumber()
+    {
+        const string registrationNumber = "SHARED-DEC";
+        using var monitor = new MonitoringFixture();
+        var secondDec = Guid.NewGuid();
+        var laterDec = Guid.NewGuid();
+        var first = Parcel("0001");
+        var second = Parcel("0002", secondDec);
+        var later = Parcel("0003", laterDec);
+        foreach (var (id, parcel) in new[] { (MainDec, first), (secondDec, second), (laterDec, later) })
+        {
+            var shipment = ShipmentXml(parcel.Id, parcel.Number, ValidGoodsLine);
+            monitor.Source.DeclarationXml[id] = $"<AltaExpressCargoDeclaration>{shipment}</AltaExpressCargoDeclaration>";
+        }
+
+        monitor.Put(SharedRegistrationSnapshot(first, second));
+        await monitor.PollAsync();
+
+        Assert.That(monitor.Source.XmlReads, Is.EquivalentTo(new[] { MainDec, secondDec }));
+        Assert.That(monitor.Submissions.Select(batch => batch.DecCode), Is.EqualTo(new[] { registrationNumber, registrationNumber }));
+        Assert.That(monitor.Submissions.Select(batch => batch.Assignments.Single().ParcelNumber),
+            Is.EquivalentTo(new[] { first.Number, second.Number }));
+
+        monitor.Put(SharedRegistrationSnapshot(first, second, later));
+        await monitor.PollAsync();
+
+        Assert.That(monitor.Source.XmlReads.Skip(2), Is.EqualTo(new[] { laterDec }));
+        var laterBatch = monitor.Submissions.Skip(2).Single();
+        Assert.That(laterBatch.DecCode, Is.EqualTo(registrationNumber));
+        Assert.That(laterBatch.Assignments.Single().ParcelNumber, Is.EqualTo(later.Number));
+
+        AltaRegisterSnapshot SharedRegistrationSnapshot(params AltaParcel[] parcels)
+        {
+            var snapshot = Snapshot("CMR-1", parcels);
+            return snapshot with
+            {
+                Declarations = snapshot.Declarations.ToDictionary(pair => pair.Key,
+                    pair => pair.Value with { Number = registrationNumber })
+            };
+        }
+    }
+
+    [Test]
+    public async Task SameParcelNumberWithConflictingDeclarationLinksStaysPending()
+    {
+        using var monitor = new MonitoringFixture();
+        monitor.Put(Snapshot("CMR-1", Parcel("0001"), Parcel("0001", Guid.NewGuid())));
+
+        await monitor.PollAsync();
+
+        Assert.That(monitor.Source.Lookups, Is.Empty);
+        Assert.That(monitor.Submissions, Is.Empty);
+        Assert.That(monitor.Logger.Entries.Any(entry => entry.Level == LogLevel.Debug &&
+            entry.Message.Contains("Conflicting IndPostList.REESTRGID links")), Is.True);
     }
 
     [Test]
@@ -207,7 +292,7 @@ public sealed class MonitoringTests
         monitor.Put(Snapshot("CMR-1", parcel));
         var shipment = ShipmentXml(parcel.Id, parcel.Number, details);
         var shipments = string.Concat(Enumerable.Repeat(shipment, shipmentCount));
-        monitor.Source.DeclarationXml = $"<AltaExpressCargoDeclaration>{shipments}</AltaExpressCargoDeclaration>";
+        monitor.Source.DeclarationXml[MainDec] = $"<AltaExpressCargoDeclaration>{shipments}</AltaExpressCargoDeclaration>";
 
         await monitor.PollAsync();
 
@@ -227,7 +312,7 @@ public sealed class MonitoringTests
         monitor.Put(Snapshot("CMR-1", parcel));
         var matchingShipment = ShipmentXml(parcel.Id, waybillNumber, ValidGoodsLine);
         var unrelatedShipment = ShipmentXml(Guid.NewGuid(), parcel.Number, "");
-        monitor.Source.DeclarationXml =
+        monitor.Source.DeclarationXml[MainDec] =
             $"<AltaExpressCargoDeclaration>{unrelatedShipment}{matchingShipment}</AltaExpressCargoDeclaration>";
 
         await monitor.PollAsync();
@@ -262,7 +347,7 @@ public sealed class MonitoringTests
     {
         using var monitor = new MonitoringFixture();
         monitor.Put(Snapshot("CMR-1", Parcel("0001")));
-        monitor.Source.DeclarationXml = xml;
+        monitor.Source.DeclarationXml[MainDec] = xml;
 
         await monitor.PollAsync();
 
@@ -723,7 +808,8 @@ public sealed class MonitoringTests
         public int MaxRegistersPerRead { get; set; } = int.MaxValue;
         public Action? AfterRead { get; set; }
         public string? Missing { get; set; }
-        public string? DeclarationXml { get; set; }
+        public Dictionary<Guid, string> DeclarationXml { get; } = [];
+        public List<Guid> XmlReads { get; } = [];
         public string Description { get; set; } = "Original goods";
         public Dictionary<Guid, string> ParcelDescriptions { get; } = [];
         public IReadOnlyList<AltaPayment> Payments { get; set; } = [];
@@ -744,8 +830,9 @@ public sealed class MonitoringTests
             var details = new Dictionary<Guid, AltaDeclarationDetails>();
             foreach (var (declarationId, ids) in requested)
             {
-                if (DeclarationXml is { } xml)
+                if (DeclarationXml.TryGetValue(declarationId, out var xml))
                 {
+                    XmlReads.Add(declarationId);
                     using var stream = new MemoryStream(Encoding.UTF8.GetBytes(xml));
                     details.Add(declarationId, await AltaDeclarationDocument.ReadAsync(stream, ids, token));
                     continue;
