@@ -135,6 +135,7 @@ internal sealed class AltaSqlSource : IAltaSource
                 continue;
             }
 
+            // Parse each requested DEC once and retain shipment details for its requested IndPost DOCGIDs.
             await using var stream = reader.GetStream(1);
             details.Add(id, await AltaDeclarationDocument.ReadAsync(stream, requestedShipments[id], token));
         }

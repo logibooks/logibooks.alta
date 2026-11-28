@@ -15,6 +15,7 @@ Logibooks Alta Adapter is a Windows application that monitors one or more Micros
 - With Core disabled, enabled SQL targets receive a connectivity probe. Target concurrency is bounded in either mode.
 - Transient GET failures receive up to three attempts with 1- and 2-second delays. An explicit HTTP `401` permits one fresh-login retry. A submission with an unknown outcome can be retried during a later eligible cycle.
 - Configuration reload applies schedule changes without rebuilding the monitoring baseline. Changing the SQL source, Core URL, or Core account starts a fresh baseline for that scope.
+- Each source declaration (`DOCGID`) is parsed once per successful SQL read when it has due work. Alta sends one Core request with that declaration's ready assignments. Source declarations that share a registration number each use their own request.
 - Enable submissions after Core and the adapter support the array-based Alta batch contract.
 - Logs identify database targets by configured name but sanitize connection strings, SQL passwords, Core passwords, and JWTs.
 
