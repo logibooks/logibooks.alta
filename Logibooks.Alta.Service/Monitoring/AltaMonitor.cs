@@ -261,8 +261,8 @@ internal sealed class AltaMonitor(
         return declaration is null ? null : new Observation(parcels.Key, declaration, decisionCode, linked);
     }
 
-    private static AltaAssignment? BuildAssignment(Observation observation, AltaSourceRead read,
-        out string? failure)
+    private AltaAssignment? BuildAssignment(string databaseTarget, string cmr, Observation observation,
+        AltaSourceRead read, out string? failure)
     {
         var declaration = observation.Declaration;
         if (string.IsNullOrWhiteSpace(declaration.Number))
@@ -305,8 +305,11 @@ internal sealed class AltaMonitor(
             }
             if (shipment.Number != parcel.Number)
             {
-                failure = $"DEC {declaration.Id} XML HouseWaybillDetails_PrDocumentNumber does not match IndPostList.Num for IndPost {parcel.Id}";
-                return null;
+                var reason = string.IsNullOrEmpty(shipment.Number)
+                    ? "Missing DEC XML field HouseWaybillDetails_PrDocumentNumber"
+                    : "DEC XML HouseWaybillDetails_PrDocumentNumber does not match IndPostList.Num";
+                logger.LogDebug("Alta {DatabaseTarget} / {Cmr} / {ParcelNumber}: {Reason} for DEC {DecId}, IndPost {IndPostId}",
+                    databaseTarget, cmr, parcel.Number, reason, declaration.Id, parcel.Id);
             }
             linked.Add((parcel, shipment));
         }
@@ -347,7 +350,7 @@ internal sealed class AltaMonitor(
             var ready = new List<(Delivery Delivery, AltaAssignment Assignment)>();
             foreach (var delivery in group.OrderBy(item => item.Observation.ParcelNumber, StringComparer.Ordinal))
             {
-                var assignment = BuildAssignment(delivery.Observation, read, out var failure);
+                var assignment = BuildAssignment(target.Name, cmr, delivery.Observation, read, out var failure);
                 if (assignment is null)
                 {
                     logger.LogWarning("Deferred Alta {DatabaseTarget} / {Cmr} / {ParcelNumber}: {Reason}",

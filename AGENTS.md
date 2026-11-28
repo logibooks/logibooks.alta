@@ -20,4 +20,5 @@ Use the same three lines with `#` comments in YAML and dotenv configuration file
 
 - Treat existing records in `ExpressCargoDeclarationList` as immutable. Queue assignments when a linked DEC first appears or when a linked `IndPostList` row is new or changes. Establish the initial snapshot for each monitored CMR and submit its existing linked assignments.
 - Scope both tables by `AVIANUM`. Track IndPost rows by `DOCGID` and compare the assignment fields `Num`, `REESTRGID`, `DECISION`, and `ALLWEIGHT`.
-- Select assignments using the table snapshots. Read DEC XML on demand for selected assignments and pending retries. Read goods from the shipment matching the IndPost `DOCGID` and parcel number. XML changes alone do not queue submissions.
+- Select assignments using the table snapshots. Read DEC XML on demand for selected assignments and pending retries. XML changes alone do not queue submissions.
+- Match a shipment within the linked DEC by XML `IndGid` and `IndPostList.DOCGID` alone. Reject duplicate matches and send `IndPostList.Num` to Core. Log a missing or mismatched XML `HouseWaybillDetails_PrDocumentNumber` at Debug and continue submission if the assignment is otherwise valid.

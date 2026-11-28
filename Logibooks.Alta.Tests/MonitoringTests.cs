@@ -195,25 +195,19 @@ public sealed class MonitoringTests
         </GoodsItemDetails>
         """;
 
-    [TestCase(null, "", "no GoodsShipment_HouseShipment with IndGid matching")]
-    [TestCase("", "", "Missing GoodsShipment_HouseShipment/HouseWaybillDetails_PrDocumentNumber")]
-    [TestCase("0001", "", "Missing GoodsShipment_HouseShipment/GoodsItemDetails")]
-    [TestCase("0001", "<CustomsPaymentDetails><PaymentModeCode>1010</PaymentModeCode></CustomsPaymentDetails>",
+    [TestCase(0, "", "no GoodsShipment_HouseShipment with IndGid matching")]
+    [TestCase(1, "", "Missing GoodsShipment_HouseShipment/GoodsItemDetails")]
+    [TestCase(1, "<CustomsPaymentDetails><PaymentModeCode>1010</PaymentModeCode></CustomsPaymentDetails>",
         "Missing CustomsPaymentDetails #1/PaymentAmount")]
-    [TestCase("0002", ValidGoodsLine, "HouseWaybillDetails_PrDocumentNumber does not match IndPostList.Num")]
-    public async Task DeferredShipmentWarningIdentifiesTheElement(string? waybillNumber, string details, string reason)
+    [TestCase(2, ValidGoodsLine, "Multiple GoodsShipment_HouseShipment elements have the same IndGid")]
+    public async Task DeferredShipmentWarningIdentifiesTheElement(int shipmentCount, string details, string reason)
     {
         using var monitor = new MonitoringFixture();
         var parcel = Parcel("0001");
         monitor.Put(Snapshot("CMR-1", parcel));
-        var shipment = waybillNumber is null ? "" : $"""
-            <GoodsShipment_HouseShipment>
-              <IndGid>{parcel.Id}</IndGid>
-              <HouseWaybillDetails_PrDocumentNumber>{waybillNumber}</HouseWaybillDetails_PrDocumentNumber>
-              {details}
-            </GoodsShipment_HouseShipment>
-            """;
-        monitor.Source.DeclarationXml = $"<AltaExpressCargoDeclaration>{shipment}</AltaExpressCargoDeclaration>";
+        var shipment = ShipmentXml(parcel.Id, parcel.Number, details);
+        var shipments = string.Concat(Enumerable.Repeat(shipment, shipmentCount));
+        monitor.Source.DeclarationXml = $"<AltaExpressCargoDeclaration>{shipments}</AltaExpressCargoDeclaration>";
 
         await monitor.PollAsync();
 
@@ -221,6 +215,45 @@ public sealed class MonitoringTests
         var warning = monitor.Logger.Entries.Single(entry => entry.Level == LogLevel.Warning).Message;
         Assert.That(warning, Does.StartWith("Deferred Alta Alta / CMR-1 / 0001:")
             .And.Contain(reason).And.Contain(parcel.Id.ToString()).And.Contain(MainDec.ToString()));
+    }
+
+    [TestCase(null, "Missing DEC XML field HouseWaybillDetails_PrDocumentNumber")]
+    [TestCase(" ", "Missing DEC XML field HouseWaybillDetails_PrDocumentNumber")]
+    [TestCase("0001.", "HouseWaybillDetails_PrDocumentNumber does not match IndPostList.Num")]
+    public async Task ShipmentNumberDiscrepanciesLogDebugAndSubmitTheIndPostNumber(string? waybillNumber, string reason)
+    {
+        using var monitor = new MonitoringFixture();
+        var parcel = Parcel("0001");
+        monitor.Put(Snapshot("CMR-1", parcel));
+        var matchingShipment = ShipmentXml(parcel.Id, waybillNumber, ValidGoodsLine);
+        var unrelatedShipment = ShipmentXml(Guid.NewGuid(), parcel.Number, "");
+        monitor.Source.DeclarationXml =
+            $"<AltaExpressCargoDeclaration>{unrelatedShipment}{matchingShipment}</AltaExpressCargoDeclaration>";
+
+        await monitor.PollAsync();
+
+        var assignment = monitor.Submissions.Single().Assignments.Single();
+        Assert.That(assignment.ParcelNumber, Is.EqualTo(parcel.Number));
+        Assert.That(assignment.Items, Is.EqualTo(new[] { new AltaGoods("Goods", null, 1, 5m) }));
+        Assert.That(monitor.Logger.Entries.Select(entry => entry.Level), Does.Not.Contain(LogLevel.Warning));
+        var diagnostic = monitor.Logger.Entries.Single(entry => entry.Level == LogLevel.Debug &&
+            entry.Message.Contains("HouseWaybillDetails_PrDocumentNumber")).Message;
+        Assert.That(diagnostic, Does.Contain(reason).And.Contain(parcel.Number)
+            .And.Contain(parcel.Id.ToString()).And.Contain(MainDec.ToString()));
+    }
+
+    private static string ShipmentXml(Guid parcelId, string? waybillNumber, string details)
+    {
+        var numberElement = waybillNumber is null
+            ? ""
+            : $"<HouseWaybillDetails_PrDocumentNumber>{waybillNumber}</HouseWaybillDetails_PrDocumentNumber>";
+        return $"""
+            <GoodsShipment_HouseShipment>
+              <IndGid>{parcelId}</IndGid>
+              {numberElement}
+              {details}
+            </GoodsShipment_HouseShipment>
+            """;
     }
 
     [TestCase("<AltaExpressCargoDeclaration>", "Could not parse DEC XML in Docs.BLOB")]

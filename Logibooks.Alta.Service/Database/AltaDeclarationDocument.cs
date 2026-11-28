@@ -12,7 +12,7 @@ using Logibooks.Alta.CoreApi;
 namespace Logibooks.Alta.Database;
 
 internal sealed record AltaShipment(
-    string Number, DateTimeOffset? DecisionAt, IReadOnlyList<AltaPayment> Payments, decimal? WeightKg,
+    string? Number, DateTimeOffset? DecisionAt, IReadOnlyList<AltaPayment> Payments, decimal? WeightKg,
     IReadOnlyList<AltaGoods> Goods);
 
 internal readonly record struct AltaShipmentRead(AltaShipment? Shipment, string? Failure = null);
@@ -70,10 +70,6 @@ internal static class AltaDeclarationDocument
 
     private static AltaShipmentRead ReadShipment(XElement shipment)
     {
-        var number = Value(shipment, "HouseWaybillDetails_PrDocumentNumber");
-        if (string.IsNullOrEmpty(number))
-            return new(null, "Missing GoodsShipment_HouseShipment/HouseWaybillDetails_PrDocumentNumber");
-
         var payments = new List<AltaPayment>();
         var paymentIndex = 0;
         foreach (var payment in Children(shipment, "CustomsPaymentDetails"))
@@ -126,7 +122,7 @@ internal static class AltaDeclarationDocument
         if (goods is null)
             return new(null, failure);
 
-        return new(new AltaShipment(number, decisionAt,
+        return new(new AltaShipment(Value(shipment, "HouseWaybillDetails_PrDocumentNumber"), decisionAt,
             payments.OrderBy(payment => payment.Kind, StringComparer.Ordinal)
                 .ThenBy(payment => payment.Currency, StringComparer.Ordinal).ThenBy(payment => payment.Amount).ToArray(),
             weightKg, goods));
